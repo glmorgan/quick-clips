@@ -1,0 +1,52 @@
+{
+	"Name": "Dynamic Copy",
+	"Version": "0.1.0.0",
+	"Author": "Glen Morgan",
+	"Actions": [
+		{
+			"Name": "Clipboard Slot",
+			"UUID": "com.glen-morgan.dynamic-copy.clipboard-slot",
+			"Icon": "imgs/actions/clipboard/icon",
+			"Tooltip": "Store and auto-paste clipboard text. Click: capture or paste. Hold 1s: clear slot.",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/clipboard/empty",
+					"TitleAlignment": "middle",
+					"Name": "Empty"
+				},
+				{
+					"Image": "imgs/actions/clipboard/filled",
+					"TitleAlignment": "middle",
+					"Name": "Filled"
+				}
+			]
+		}
+	],
+	"Category": "Dynamic Copy",
+	"CategoryIcon": "imgs/plugin/category-icon",
+	"CodePath": "bin/plugin.js",
+	"Description": "Quickly copy items to clipboard",
+	"Icon": "imgs/plugin/marketplace",
+	"SDKVersion": 3,
+	"Software": {
+		"MinimumVersion": "6.9"
+	},
+	"OS": [
+		{
+			"Platform": "mac",
+			"MinimumVersion": "12"
+		},
+		{
+			"Platform": "windows",
+			"MinimumVersion": "10"
+		}
+	],
+	"Nodejs": {
+		"Version": "20",
+		"Debug": "enabled"
+	},
+	"UUID": "com.glen-morgan.dynamic-copy"
+}
