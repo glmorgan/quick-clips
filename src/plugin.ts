@@ -2,8 +2,8 @@ import streamDeck from "@elgato/streamdeck";
 
 import { ClipboardSlot } from "./actions/clipboard-slot";
 
-// We can enable "trace" logging so that all messages between the Stream Deck, and the plugin are recorded. When storing sensitive information
-streamDeck.logger.setLevel("trace");
+// Set log level to "info" for production (use "trace" for debugging)
+streamDeck.logger.setLevel("info");
 
 // Register the clipboard slot action.
 streamDeck.actions.registerAction(new ClipboardSlot());

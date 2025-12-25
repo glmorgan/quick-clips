@@ -1,4 +1,4 @@
-import { action, KeyDownEvent, KeyUpEvent, SingletonAction, WillAppearEvent } from "@elgato/streamdeck";
+import { action, KeyDownEvent, KeyUpEvent, SingletonAction, WillAppearEvent, DidReceiveSettingsEvent, SendToPluginEvent, streamDeck } from "@elgato/streamdeck";
 import { spawn } from "child_process";
 import { exec } from "child_process";
 import { promisify } from "util";
@@ -103,12 +103,12 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
         } else if (cleanText.length <= maxTotalChars) {
             // Fits in 2 lines - try to break at word boundary
             let breakPoint = cleanText.lastIndexOf(' ', maxCharsPerLine);
-            
+
             if (breakPoint === -1 || breakPoint < 3) {
                 // No good word boundary, break at max chars
                 breakPoint = maxCharsPerLine;
             }
-            
+
             const line1 = cleanText.substring(0, breakPoint).trim();
             const line2 = cleanText.substring(breakPoint).trim();
             return `${line1}\n${line2}`;
@@ -116,16 +116,16 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
             // Too long - truncate to fit in 2 lines with ellipsis
             // Reserve space for ellipsis on line 2
             const line2MaxChars = maxCharsPerLine - 1; // Leave room for …
-            
+
             // Find break point for line 1
             let breakPoint = cleanText.lastIndexOf(' ', maxCharsPerLine);
             if (breakPoint === -1 || breakPoint < 3) {
                 breakPoint = maxCharsPerLine;
             }
-            
+
             const line1 = cleanText.substring(0, breakPoint).trim();
             const remainingText = cleanText.substring(breakPoint).trim();
-            
+
             // Truncate line 2 if needed
             let line2 = remainingText;
             if (line2.length > line2MaxChars) {
@@ -137,7 +137,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
                     line2 = line2.substring(0, line2MaxChars);
                 }
             }
-            
+
             return `${line1}\n${line2}…`;
         }
     }
@@ -146,25 +146,39 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
      * Update the button's visual appearance based on current state
      */
     private async updateDisplay(
-        ev: WillAppearEvent<SlotSettings> | KeyDownEvent<SlotSettings> | KeyUpEvent<SlotSettings>,
+        ev: WillAppearEvent<SlotSettings> | KeyDownEvent<SlotSettings> | KeyUpEvent<SlotSettings> | DidReceiveSettingsEvent<SlotSettings> | SendToPluginEvent<any, SlotSettings>,
         settings: SlotSettings
     ): Promise<void> {
         let title: string;
         let state: number;
+        let imagePath: string | undefined;
 
         if (settings.value) {
             title = settings.label || "Stored";
             state = 1; // Filled state
+
+            // Use lock icon if prevent clear is enabled
+            if (settings.suppressClear) {
+                imagePath = "imgs/actions/clipboard/locked.png";
+            }
         } else {
             title = "Empty";
             state = 0; // Empty state
         }
 
-        await ev.action.setTitle(title);
+        // All action types should have setTitle
+        if ('setTitle' in ev.action && typeof ev.action.setTitle === 'function') {
+            await ev.action.setTitle(title);
+        }
 
         // setState is available on KeyAction (KeyDownEvent and KeyUpEvent have KeyAction)
         if ('setState' in ev.action && typeof ev.action.setState === 'function') {
             await ev.action.setState(state);
+        }
+
+        // Set image - either custom lock icon or undefined to reset to state's default
+        if ('setImage' in ev.action && typeof ev.action.setImage === 'function') {
+            await ev.action.setImage(imagePath);
         }
     }
 
@@ -178,11 +192,72 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     }
 
     /**
+     * Handle messages from property inspector
+     */
+    override async onSendToPlugin(ev: SendToPluginEvent<any, SlotSettings>): Promise<void> {
+        streamDeck.logger.info(`[onSendToPlugin] Received event: ${ev.payload.event}`);
+
+        if (ev.payload.event === 'clearSlot') {
+            const settings = await ev.action.getSettings();
+
+            // Clear the settings
+            const clearedSettings: SlotSettings = {
+                ...settings,
+                value: undefined,
+                label: undefined
+            };
+
+            await ev.action.setSettings(clearedSettings);
+
+            // Manually update display since setSettings won't trigger onDidReceiveSettings
+            await this.updateDisplay(ev, clearedSettings);
+
+            streamDeck.logger.info(`[onSendToPlugin] Slot cleared and display updated`);
+        }
+    }    /**
+     * Handle settings changes from property inspector
+     */
+    override async onDidReceiveSettings(ev: DidReceiveSettingsEvent<SlotSettings>): Promise<void> {
+        // Update display when settings change (e.g., suppressClear toggled)
+        // Only update visuals, don't modify settings to avoid infinite loop
+        const settings = ev.payload.settings;
+
+        let title: string;
+        let state: number;
+        let imagePath: string | undefined;
+
+        if (settings.value) {
+            title = settings.label || "Stored";
+            state = 1;
+
+            if (settings.suppressClear) {
+                imagePath = "imgs/actions/clipboard/locked.png";
+            }
+        } else {
+            title = "Empty";
+            state = 0;
+        }
+
+        await ev.action.setTitle(title);
+
+        if ('setState' in ev.action && typeof ev.action.setState === 'function') {
+            await ev.action.setState(state);
+        }
+
+        if ('setImage' in ev.action && typeof ev.action.setImage === 'function') {
+            await ev.action.setImage(imagePath);
+        }
+    }
+
+    /**
      * Handle keyDown event - start hold-to-clear timer
      */
     override async onKeyDown(ev: KeyDownEvent<SlotSettings>): Promise<void> {
         const contextId = ev.action.id;
         const settings = await ev.action.getSettings();
+
+        // Debug: Log settings
+        streamDeck.logger.info(`[keyDown] Settings: ${JSON.stringify(settings)}`);
 
         // Clear any existing tracker
         const existing = this.holdTrackers.get(contextId);
@@ -192,6 +267,18 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
 
         // Get current title
         const originalTitle = settings.value ? (settings.label || "Stored") : "Empty";
+
+        // If suppress clear is enabled, create a simple tracker without timer
+        if (settings.suppressClear) {
+            streamDeck.logger.info(`[keyDown] Suppress clear is enabled, skipping timer`);
+            const tracker = {
+                timer: 0 as any, // No timer needed
+                clearMode: false,
+                originalTitle
+            };
+            this.holdTrackers.set(contextId, tracker);
+            return;
+        }
 
         // Create hold-to-clear tracker
         const tracker = {
@@ -213,21 +300,27 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     override async onKeyUp(ev: KeyUpEvent<SlotSettings>): Promise<void> {
         const contextId = ev.action.id;
         const tracker = this.holdTrackers.get(contextId);
+        const settings = await ev.action.getSettings();
+
+        streamDeck.logger.info(`[keyUp] tracker exists: ${!!tracker}, suppressClear: ${settings.suppressClear}`);
 
         if (!tracker) {
+            streamDeck.logger.info(`[keyUp] No tracker found, ignoring`);
             return;
         }
 
-        // Clear the timer
-        clearTimeout(tracker.timer);
-
-        const settings = await ev.action.getSettings();
+        // Clear the timer if it exists
+        if (tracker.timer) {
+            clearTimeout(tracker.timer);
+        }
 
         if (tracker.clearMode) {
             // Was held - clear the slot
+            streamDeck.logger.info(`[keyUp] Clear mode - clearing slot`);
             await this.handleClear(ev, settings);
         } else {
             // Was a quick click - normal action
+            streamDeck.logger.info(`[keyUp] Normal click - handling action`);
             await this.handleClick(ev, settings);
         }
 
@@ -252,8 +345,9 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
             const clipboardText = await this.readClipboard();
 
             if (clipboardText) {
-                // Create new settings object with captured content
+                // Merge with existing settings to preserve all properties
                 const newSettings: SlotSettings = {
+                    ...settings,
                     value: clipboardText,
                     label: this.generateLabel(clipboardText)
                 };
@@ -271,8 +365,12 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
      * - Clears the slot and returns to empty state
      */
     private async handleClear(ev: KeyUpEvent<SlotSettings>, settings: SlotSettings): Promise<void> {
-        // Clear the slot - create a new empty settings object
-        const emptySettings: SlotSettings = {};
+        // Clear the slot - merge with existing settings and remove value/label
+        const emptySettings: SlotSettings = {
+            ...settings,
+            value: undefined,
+            label: undefined
+        };
 
         await ev.action.setSettings(emptySettings);
         await this.updateDisplay(ev, emptySettings);
@@ -281,7 +379,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
 }
 
 /**
- * Settings for {@link ClipboardSlot}
+ * Settings for Clipboard Slot action
  * 
  * Persisted per-key using Stream Deck's settings API
  */
@@ -291,4 +389,7 @@ type SlotSettings = {
 
     /** Display label (auto-generated from value) */
     label?: string;
+
+    /** If true, disable hold-to-clear functionality */
+    suppressClear?: boolean;
 };

@@ -4,6 +4,50 @@
 
 A Stream Deck plugin that provides reusable clipboard slots for storing and restoring text values with automatic paste functionality.
 
+## Installation
+
+### Prerequisites
+- Stream Deck software (version 6.9 or later)
+- macOS 12 or later / Windows 10 or later
+- Node.js 20 (automatically managed by Stream Deck)
+
+### Installing the Plugin
+
+1. **Download or Clone** this repository to your local machine
+
+2. **Build the plugin**:
+   ```bash
+   cd /path/to/dynamic-copy
+   npm install
+   npm run build
+   ```
+
+3. **Install to Stream Deck**:
+   ```bash
+   # Link the plugin folder to Stream Deck plugins directory
+   streamdeck link
+   
+   # Or manually copy to:
+   # macOS: ~/Library/Application Support/com.elgato.StreamDeck/Plugins/
+   # Windows: %appdata%\Elgato\StreamDeck\Plugins\
+   ```
+
+4. **Restart Stream Deck**:
+   ```bash
+   streamdeck restart com.glen-morgan.dynamic-copy
+   ```
+
+5. **Add to Stream Deck**: Open Stream Deck software and drag the "Clipboard Slot" action onto your device
+
+### Development Setup
+
+For active development with auto-reload:
+
+```bash
+# Watch mode - automatically rebuilds and restarts on file changes
+npm run watch
+```
+
 ## Features
 
 ### Clipboard Slot Action

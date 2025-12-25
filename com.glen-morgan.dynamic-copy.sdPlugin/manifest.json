@@ -1,13 +1,14 @@
 {
-	"Name": "Dynamic Copy",
+	"Name": "Quick Clips",
 	"Version": "0.1.0.0",
 	"Author": "Glen Morgan",
 	"Actions": [
 		{
-			"Name": "Clipboard Slot",
+			"Name": "Quick Clip",
 			"UUID": "com.glen-morgan.dynamic-copy.clipboard-slot",
 			"Icon": "imgs/actions/clipboard/icon",
 			"Tooltip": "Store and auto-paste clipboard text. Click: capture or paste. Hold 1s: clear slot.",
+			"PropertyInspectorPath": "ui/clipboard-slot.html",
 			"Controllers": [
 				"Keypad"
 			],
@@ -25,10 +26,10 @@
 			]
 		}
 	],
-	"Category": "Dynamic Copy",
+	"Category": "Quick Clips",
 	"CategoryIcon": "imgs/plugin/category-icon",
 	"CodePath": "bin/plugin.js",
-	"Description": "Quickly copy items to clipboard",
+	"Description": "Store and paste clipboard text with one click",
 	"Icon": "imgs/plugin/marketplace",
 	"SDKVersion": 3,
 	"Software": {

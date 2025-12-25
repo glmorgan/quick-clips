@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+
+<head lang="en">
+    <meta charset="utf-8" />
+    <script src="sdpi-components.js"></script>
+</head>
+
+<body>
+    <sdpi-item label="Prevent Clear">
+        <sdpi-checkbox setting="suppressClear">Disable hold-to-clear functionality</sdpi-checkbox>
+    </sdpi-item>
+
+    <sdpi-item label="Clear Slot">
+        <sdpi-button id="clearButton">Clear Stored Content</sdpi-button>
+    </sdpi-item>
+
+    <!-- Hidden delegate that actually sends the event -->
+    <sdpi-delegate id="clearDelegate" invoke="clearSlot" style="display: none;"></sdpi-delegate>
+
+    <script>
+        // When button is clicked, trigger the hidden delegate
+        document.addEventListener('DOMContentLoaded', () => {
+            const button = document.getElementById('clearButton');
+            const delegate = document.getElementById('clearDelegate');
+
+            if (button && delegate) {
+                button.addEventListener('click', () => {
+                    // Try to find the internal button in the delegate and click it
+                    const shadowRoot = delegate.shadowRoot;
+                    if (shadowRoot) {
+                        const internalButton = shadowRoot.querySelector('sdpi-button') || shadowRoot.querySelector('button');
+                        if (internalButton) {
+                            internalButton.click();
+                        }
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+
+</html>
