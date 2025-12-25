@@ -6,7 +6,7 @@ import path from "node:path";
 import url from "node:url";
 
 const isWatching = !!process.env.ROLLUP_WATCH;
-const sdPlugin = "com.glen-morgan.dynamic-copy.sdPlugin";
+const sdPlugin = "com.quickclips.streamdeck.sdPlugin";
 
 /**
  * @type {import('rollup').RollupOptions}

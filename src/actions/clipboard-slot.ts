@@ -28,7 +28,7 @@ const LONG_PRESS_THRESHOLD = 1000;
  * 
  * @platform macOS - Uses pbpaste/pbcopy for clipboard access and osascript for paste simulation
  */
-@action({ UUID: "com.glen-morgan.dynamic-copy.clipboard-slot" })
+@action({ UUID: "com.quickclips.streamdeck.clipboard-slot" })
 export class ClipboardSlot extends SingletonAction<SlotSettings> {
     /**
      * Tracks hold-to-clear state for each button instance on the Stream Deck.

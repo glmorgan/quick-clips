@@ -49,7 +49,7 @@ Useful for text that changes throughout your workflow—temporarily storing code
 
 4. Link the plugin to Stream Deck:
    ```bash
-   ln -s "$(pwd)/com.glen-morgan.dynamic-copy.sdPlugin" \
+   ln -s "$(pwd)/com.quickclips.streamdeck.sdPlugin" \
      "$HOME/Library/Application Support/com.elgato.StreamDeck/Plugins/"
    ```
 
@@ -111,7 +111,7 @@ npm run watch
 
 ### Restart Plugin
 ```bash
-streamdeck restart com.glen-morgan.dynamic-copy
+streamdeck restart com.quickclips.streamdeck
 ```
 
 ## Technical Details

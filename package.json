@@ -1,7 +1,7 @@
 {
     "scripts": {
         "build": "rollup -c",
-        "watch": "rollup -c -w --watch.onEnd=\"streamdeck restart com.glen-morgan.dynamic-copy\""
+        "watch": "rollup -c -w --watch.onEnd=\"streamdeck restart com.quickclips.streamdeck\""
     },
     "type": "module",
     "devDependencies": {

@@ -5,7 +5,7 @@
 	"Actions": [
 		{
 			"Name": "Quick Clip",
-			"UUID": "com.glen-morgan.dynamic-copy.clipboard-slot",
+			"UUID": "com.quickclips.streamdeck.clipboard-slot",
 			"Icon": "imgs/actions/clipboard/icon",
 			"Tooltip": "Store and auto-paste clipboard text. Click: capture or paste. Hold 1s: clear slot.",
 			"PropertyInspectorPath": "ui/clipboard-slot.html",
@@ -49,5 +49,5 @@
 		"Version": "20",
 		"Debug": "enabled"
 	},
-	"UUID": "com.glen-morgan.dynamic-copy"
+	"UUID": "com.quickclips.streamdeck"
 }
