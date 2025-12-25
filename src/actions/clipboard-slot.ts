@@ -28,9 +28,9 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     /**
      * Map to track hold-to-clear timers per action context
      * Key: action context ID
-     * Value: { timer, clearMode, originalTitle }
+     * Value: { timer, clearMode }
      */
-    private holdTrackers = new Map<string, { timer: NodeJS.Timeout; clearMode: boolean; originalTitle: string }>();
+    private holdTrackers = new Map<string, { timer: NodeJS.Timeout | null; clearMode: boolean }>();
 
     /**
      * Read text from macOS clipboard using pbpaste
@@ -40,7 +40,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
             const { stdout } = await execAsync("pbpaste");
             return stdout;
         } catch (error) {
-            console.error("Failed to read clipboard:", error);
+            streamDeck.logger.error("Failed to read clipboard:", error);
             return "";
         }
     }
@@ -56,7 +56,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
             process.stdin.end();
 
             process.on("error", (error) => {
-                console.error("Failed to write clipboard:", error);
+                streamDeck.logger.error("Failed to write clipboard:", error);
                 reject(error);
             });
 
@@ -78,7 +78,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
             // Use AppleScript to simulate Cmd+V keystroke
             await execAsync('osascript -e \'tell application "System Events" to keystroke "v" using command down\'');
         } catch (error) {
-            console.error("Failed to simulate paste:", error);
+            streamDeck.logger.error("Failed to simulate paste:", error);
         }
     }
 
@@ -95,7 +95,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
 
         const maxCharsPerLine = 7;
         const maxLines = 2;
-        const maxTotalChars = maxCharsPerLine * maxLines; // 20 chars total
+        const maxTotalChars = maxCharsPerLine * maxLines;
 
         if (cleanText.length <= maxCharsPerLine) {
             // Fits on one line
@@ -219,34 +219,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
      */
     override async onDidReceiveSettings(ev: DidReceiveSettingsEvent<SlotSettings>): Promise<void> {
         // Update display when settings change (e.g., suppressClear toggled)
-        // Only update visuals, don't modify settings to avoid infinite loop
-        const settings = ev.payload.settings;
-
-        let title: string;
-        let state: number;
-        let imagePath: string | undefined;
-
-        if (settings.value) {
-            title = settings.label || "Stored";
-            state = 1;
-
-            if (settings.suppressClear) {
-                imagePath = "imgs/actions/clipboard/locked.png";
-            }
-        } else {
-            title = "Empty";
-            state = 0;
-        }
-
-        await ev.action.setTitle(title);
-
-        if ('setState' in ev.action && typeof ev.action.setState === 'function') {
-            await ev.action.setState(state);
-        }
-
-        if ('setImage' in ev.action && typeof ev.action.setImage === 'function') {
-            await ev.action.setImage(imagePath);
-        }
+        await this.updateDisplay(ev, ev.payload.settings);
     }
 
     /**
@@ -256,25 +229,17 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
         const contextId = ev.action.id;
         const settings = await ev.action.getSettings();
 
-        // Debug: Log settings
-        streamDeck.logger.info(`[keyDown] Settings: ${JSON.stringify(settings)}`);
-
         // Clear any existing tracker
         const existing = this.holdTrackers.get(contextId);
-        if (existing) {
+        if (existing?.timer) {
             clearTimeout(existing.timer);
         }
 
-        // Get current title
-        const originalTitle = settings.value ? (settings.label || "Stored") : "Empty";
-
         // If suppress clear is enabled, create a simple tracker without timer
         if (settings.suppressClear) {
-            streamDeck.logger.info(`[keyDown] Suppress clear is enabled, skipping timer`);
             const tracker = {
-                timer: 0 as any, // No timer needed
-                clearMode: false,
-                originalTitle
+                timer: null,
+                clearMode: false
             };
             this.holdTrackers.set(contextId, tracker);
             return;
@@ -287,8 +252,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
                 tracker.clearMode = true;
                 await ev.action.setTitle("Release\nto Clear");
             }, LONG_PRESS_THRESHOLD),
-            clearMode: false,
-            originalTitle
+            clearMode: false
         };
 
         this.holdTrackers.set(contextId, tracker);
@@ -302,10 +266,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
         const tracker = this.holdTrackers.get(contextId);
         const settings = await ev.action.getSettings();
 
-        streamDeck.logger.info(`[keyUp] tracker exists: ${!!tracker}, suppressClear: ${settings.suppressClear}`);
-
         if (!tracker) {
-            streamDeck.logger.info(`[keyUp] No tracker found, ignoring`);
             return;
         }
 
@@ -316,11 +277,9 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
 
         if (tracker.clearMode) {
             // Was held - clear the slot
-            streamDeck.logger.info(`[keyUp] Clear mode - clearing slot`);
             await this.handleClear(ev, settings);
         } else {
             // Was a quick click - normal action
-            streamDeck.logger.info(`[keyUp] Normal click - handling action`);
             await this.handleClick(ev, settings);
         }
 
