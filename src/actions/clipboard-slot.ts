@@ -9,31 +9,47 @@ const execAsync = promisify(exec);
 const LONG_PRESS_THRESHOLD = 1000;
 
 /**
- * Clipboard Slot Action
+ * Quick Clip Action - A clipboard management slot for Stream Deck
  * 
- * A reusable slot that can store and restore clipboard text.
+ * Provides a reusable clipboard slot that captures, stores, and pastes text content.
+ * Each slot instance maintains its own independent clipboard history with persistent storage.
  * 
- * State Transitions:
- * 1. Empty state → Click: capture current clipboard content into slot
- * 2. Filled state → Quick click: paste stored value
- * 3. Any state → Hold for 1 second then release: clear slot
+ * @remarks
+ * This action supports three primary interaction modes:
+ * - **Empty State**: Click to capture current system clipboard content into the slot
+ * - **Filled State**: Click to paste stored content (writes to clipboard and simulates Cmd+V)
+ * - **Hold-to-Clear**: Press and hold for 1 second to clear stored content (can be disabled)
  * 
- * Hold-to-clear Detection:
- * - On keyDown: start a timer (1000ms)
- * - If timer completes: mark as hold-to-clear mode, show "Release to Clear"
- * - On keyUp: if in hold-to-clear mode, clear; otherwise execute normal click
+ * Visual feedback is provided through four distinct states:
+ * - Empty (unlocked): Default empty clipboard icon
+ * - Empty (locked): Protected empty state when prevent clear is enabled
+ * - Filled (unlocked): Filled clipboard icon with content preview
+ * - Filled (locked): Locked icon when prevent clear is enabled
+ * 
+ * @platform macOS - Uses pbpaste/pbcopy for clipboard access and osascript for paste simulation
  */
 @action({ UUID: "com.glen-morgan.dynamic-copy.clipboard-slot" })
 export class ClipboardSlot extends SingletonAction<SlotSettings> {
     /**
-     * Map to track hold-to-clear timers per action context
-     * Key: action context ID
-     * Value: { timer, clearMode }
+     * Tracks hold-to-clear state for each button instance on the Stream Deck.
+     * 
+     * Maintains per-button timers and clear mode flags to implement the hold-to-clear gesture.
+     * When a button is held for {@link LONG_PRESS_THRESHOLD} milliseconds, the button enters
+     * clear mode and displays "Release to Clear" feedback.
+     * 
+     * @private
+     * @type {Map<string, {timer: NodeJS.Timeout | null, clearMode: boolean}>}
      */
     private holdTrackers = new Map<string, { timer: NodeJS.Timeout | null; clearMode: boolean }>();
 
     /**
-     * Read text from macOS clipboard using pbpaste
+     * Reads the current text content from the macOS system clipboard.
+     * 
+     * Uses the native `pbpaste` command-line utility to access clipboard data.
+     * 
+     * @private
+     * @returns {Promise<string>} The current clipboard text, or empty string if read fails
+     * @throws Logs error and returns empty string on clipboard access failure
      */
     private async readClipboard(): Promise<string> {
         try {
@@ -46,7 +62,15 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     }
 
     /**
-     * Write text to macOS clipboard using pbcopy
+     * Writes text content to the macOS system clipboard.
+     * 
+     * Uses the native `pbcopy` command-line utility via a spawned process with piped stdin.
+     * This approach ensures proper handling of large text content and special characters.
+     * 
+     * @private
+     * @param {string} text - The text content to write to the clipboard
+     * @returns {Promise<void>} Resolves when clipboard write completes successfully
+     * @throws {Error} Rejects if pbcopy process fails or exits with non-zero code
      */
     private async writeClipboard(text: string): Promise<void> {
         return new Promise((resolve, reject) => {
@@ -71,7 +95,14 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     }
 
     /**
-     * Simulate Cmd+V paste using osascript
+     * Simulates a Cmd+V keyboard shortcut to paste clipboard content into the active application.
+     * 
+     * Uses AppleScript via `osascript` to send a synthetic keystroke event to the system.
+     * This provides seamless paste functionality without requiring user keyboard input.
+     * 
+     * @private
+     * @returns {Promise<void>} Resolves when paste simulation completes
+     * @throws Logs error if AppleScript execution fails (does not reject)
      */
     private async simulatePaste(): Promise<void> {
         try {
@@ -83,11 +114,20 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     }
 
     /**
-     * Generate a display label from clipboard text
-     * - Max 7 characters per line
-     * - Max 2 lines
-     * - Try to break at word boundaries
-     * - Add ellipsis if truncated
+     * Generates a compact display label from clipboard text for button title.
+     * 
+     * Formats the text to fit Stream Deck button constraints with intelligent truncation:
+     * - Maximum 7 characters per line
+     * - Maximum 2 lines (14 characters total)
+     * - Attempts word-boundary breaks for readability
+     * - Appends ellipsis (…) when content is truncated
+     * 
+     * @private
+     * @param {string} text - The full clipboard text to generate a label from
+     * @returns {string} Formatted label string with newlines for multi-line display
+     * @example
+     * generateLabel("Hello World") // Returns: "Hello\nWorld"
+     * generateLabel("This is a very long text") // Returns: "This is\na very…"
      */
     private generateLabel(text: string): string {
         // Remove newlines and extra whitespace for cleaner display
@@ -143,7 +183,25 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     }
 
     /**
-     * Update the button's visual appearance based on current state
+     * Updates the button's visual appearance to reflect current slot state and settings.
+     * 
+     * Synchronizes the button's title, state, and icon based on whether the slot contains
+     * stored content and whether prevent clear is enabled. Uses type guards to safely
+     * access action methods across different event types.
+     * 
+     * @remarks
+     * Visual State Matrix:
+     * | Content | Prevent Clear | State | Icon          | Title         |
+     * |---------|---------------|-------|---------------|---------------|
+     * | Empty   | Disabled      | 0     | Default       | "Empty"       |
+     * | Empty   | Enabled       | 0     | empty-locked  | "Empty"       |
+     * | Filled  | Disabled      | 1     | Default       | Content label |
+     * | Filled  | Enabled       | 1     | locked        | Content label |
+     * 
+     * @private
+     * @param {WillAppearEvent | KeyDownEvent | KeyUpEvent | DidReceiveSettingsEvent | SendToPluginEvent} ev - Stream Deck event with action context
+     * @param {SlotSettings} settings - Current settings containing value, label, and suppressClear
+     * @returns {Promise<void>} Resolves when all display updates are complete
      */
     private async updateDisplay(
         ev: WillAppearEvent<SlotSettings> | KeyDownEvent<SlotSettings> | KeyUpEvent<SlotSettings> | DidReceiveSettingsEvent<SlotSettings> | SendToPluginEvent<any, SlotSettings>,
@@ -164,6 +222,11 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
         } else {
             title = "Empty";
             state = 0; // Empty state
+
+            // Use empty-locked icon if prevent clear is enabled
+            if (settings.suppressClear) {
+                imagePath = "imgs/actions/clipboard/empty-locked.png";
+            }
         }
 
         // All action types should have setTitle
@@ -183,7 +246,17 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     }
 
     /**
-     * Initialize visual state when action appears on Stream Deck
+     * Lifecycle handler called when the action appears on the Stream Deck.
+     * 
+     * Fetches persisted settings and initializes the button's visual state.
+     * This ensures the button displays correct state information when:
+     * - Stream Deck application starts
+     * - User switches between profiles
+     * - Action is added to a new button
+     * 
+     * @override
+     * @param {WillAppearEvent<SlotSettings>} ev - Event containing action context and current settings
+     * @returns {Promise<void>} Resolves when initialization is complete
      */
     override async onWillAppear(ev: WillAppearEvent<SlotSettings>): Promise<void> {
         // Always fetch fresh settings to avoid stale data
@@ -192,7 +265,17 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     }
 
     /**
-     * Handle messages from property inspector
+     * Handles messages sent from the property inspector UI to the plugin.
+     * 
+     * Processes custom events from the property inspector, currently supporting:
+     * - `clearSlot`: Clears stored clipboard content and resets button to empty state
+     * 
+     * The display is manually updated after clearing since `setSettings()` calls from
+     * the plugin do not trigger `onDidReceiveSettings` events.
+     * 
+     * @override
+     * @param {SendToPluginEvent<any, SlotSettings>} ev - Event containing payload from property inspector
+     * @returns {Promise<void>} Resolves when message handling is complete
      */
     override async onSendToPlugin(ev: SendToPluginEvent<any, SlotSettings>): Promise<void> {
         streamDeck.logger.info(`[onSendToPlugin] Received event: ${ev.payload.event}`);
@@ -215,7 +298,15 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
             streamDeck.logger.info(`[onSendToPlugin] Slot cleared and display updated`);
         }
     }    /**
-     * Handle settings changes from property inspector
+     * Handles settings changes made through the property inspector.
+     * 
+     * Called automatically by Stream Deck when user modifies settings in the property
+     * inspector UI (e.g., toggling the "Prevent Clear" checkbox). Updates the button's
+     * visual state to reflect the new settings, including lock icon visibility.
+     * 
+     * @override
+     * @param {DidReceiveSettingsEvent<SlotSettings>} ev - Event containing updated settings
+     * @returns {Promise<void>} Resolves when display update is complete
      */
     override async onDidReceiveSettings(ev: DidReceiveSettingsEvent<SlotSettings>): Promise<void> {
         // Update display when settings change (e.g., suppressClear toggled)
@@ -223,7 +314,18 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     }
 
     /**
-     * Handle keyDown event - start hold-to-clear timer
+     * Handles button press events and initiates hold-to-clear detection.
+     * 
+     * Creates a timer-based tracker to detect if the user is performing a hold gesture.
+     * If the prevent clear setting is enabled, creates a dummy tracker without a timer
+     * to ensure proper click handling while disabling the hold-to-clear functionality.
+     * 
+     * When held for {@link LONG_PRESS_THRESHOLD} milliseconds without release, the button
+     * enters clear mode and displays "Release to Clear" as visual feedback.
+     * 
+     * @override
+     * @param {KeyDownEvent<SlotSettings>} ev - Event containing action context and button state
+     * @returns {Promise<void>} Resolves immediately after timer setup
      */
     override async onKeyDown(ev: KeyDownEvent<SlotSettings>): Promise<void> {
         const contextId = ev.action.id;
@@ -259,7 +361,15 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     }
 
     /**
-     * Handle keyUp event - process click or clear
+     * Handles button release events and executes the appropriate action.
+     * 
+     * Determines whether the button press was a quick click or a hold-to-clear gesture
+     * based on the tracker state set during `onKeyDown`. Executes either click behavior
+     * (capture/paste) or clear behavior accordingly, then cleans up the tracker.
+     * 
+     * @override
+     * @param {KeyUpEvent<SlotSettings>} ev - Event containing action context and button state
+     * @returns {Promise<void>} Resolves when action execution is complete
      */
     override async onKeyUp(ev: KeyUpEvent<SlotSettings>): Promise<void> {
         const contextId = ev.action.id;
@@ -288,10 +398,20 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     }
 
     /**
-     * Handle normal click behavior
+     * Executes click action behavior based on current slot state.
      * 
-     * - Empty state: capture current clipboard into slot
-     * - Filled state: paste stored value
+     * Implements state-dependent click behavior:
+     * - **Empty Slot**: Captures current system clipboard content, generates a display label,
+     *   and stores both in settings for future use
+     * - **Filled Slot**: Writes stored content to system clipboard and simulates Cmd+V to
+     *   paste into the active application
+     * 
+     * Both operations provide success feedback via the showOk visual indicator.
+     * 
+     * @private
+     * @param {KeyUpEvent<SlotSettings>} ev - Event containing action context for feedback
+     * @param {SlotSettings} settings - Current settings containing stored content if any
+     * @returns {Promise<void>} Resolves when click action completes
      */
     private async handleClick(ev: KeyUpEvent<SlotSettings>, settings: SlotSettings): Promise<void> {
         if (settings.value) {
@@ -319,9 +439,16 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     }
 
     /**
-     * Handle clear action (from hold-to-clear)
+     * Executes clear action after hold-to-clear gesture is completed.
      * 
-     * - Clears the slot and returns to empty state
+     * Removes stored clipboard content and display label from settings while preserving
+     * other settings like the prevent clear flag. Updates button visual state to show
+     * empty status and provides success feedback.
+     * 
+     * @private
+     * @param {KeyUpEvent<SlotSettings>} ev - Event containing action context for updates
+     * @param {SlotSettings} settings - Current settings to merge with cleared values
+     * @returns {Promise<void>} Resolves when clear operation completes
      */
     private async handleClear(ev: KeyUpEvent<SlotSettings>, settings: SlotSettings): Promise<void> {
         // Clear the slot - merge with existing settings and remove value/label
@@ -338,9 +465,16 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
 }
 
 /**
- * Settings for Clipboard Slot action
+ * Persistent settings for each Quick Clip slot instance.
  * 
- * Persisted per-key using Stream Deck's settings API
+ * Each button instance on the Stream Deck maintains its own independent settings object,
+ * stored persistently in the Stream Deck profile. Settings survive application restarts,
+ * profile switches, and plugin reloads.
+ * 
+ * @typedef {Object} SlotSettings
+ * @property {string} [value] - The full clipboard text stored in this slot (undefined when empty)
+ * @property {string} [label] - Generated display label shown on button (max 2 lines, 7 chars per line)
+ * @property {boolean} [suppressClear] - When true, disables hold-to-clear functionality and shows lock icon
  */
 type SlotSettings = {
     /** The stored clipboard text */
