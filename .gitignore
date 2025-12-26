@@ -1,6 +1,36 @@
 # Node.js
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
 
 # Stream Deck files
-*.sdPlugin/bin
-*.sdPlugin/logs
+*.sdPlugin/bin/
+*.sdPlugin/logs/
+
+# Build outputs
+dist/
+build/
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
