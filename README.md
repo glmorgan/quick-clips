@@ -1,31 +1,44 @@
 # Quick Clips
 
-A Stream Deck plugin that provides reusable clipboard slots for capturing, storing, and pasting text content.
+Quick Clips is a Stream Deck plugin that gives you simple, reusable clipboard slots for capturing, storing, and pasting text whenever you need it.
 
 ## What It Does
 
-Quick Clips turns your Stream Deck buttons into clipboard storage slots. Unlike static text buttons that require opening the Stream Deck UI to configure, Quick Clips buttons dynamically capture whatever text is currently on your clipboard with a single press.
+Quick Clips turns Stream Deck buttons into flexible clipboard slots. Instead of setting up static text buttons in the Stream Deck UI, each button can grab whatever text is currently on your clipboard with a single press.
 
-Keep several Quick Clip buttons on your Stream Deck. When you copy text you want to reuse, click an empty slot to store it. Click again to paste. When you're done with that text, hold to clear the slot and it's ready for the next clip. No UI configuration needed.
+Keep a few Quick Clip buttons on your Stream Deck. When you copy something you want to reuse, press an empty button to store it. Press the same button again to paste it into the active app. When you are finished with that text, press and hold to clear the slot so it is ready for the next clip. There is no need to open the Stream Deck configuration UI during your workflow.
 
-Useful for text that changes throughout your workflow—temporarily storing code snippets, API responses, email addresses, URLs, or any text you need multiple times before moving on to something else.
+This is especially useful for text that changes often, such as code snippets, API values, email addresses, URLs, or anything you need to paste multiple times before moving on.
 
 ## Features
 
-- **One-Click Capture & Paste** - Click when empty to capture current clipboard, click when filled to paste
-- **Dynamic Content** - Captures whatever text is on your clipboard at the moment you click
-- **Prevent Clear** - Optional lock mode to protect stored clips
-- **Hold-to-Clear** - Press and hold for 1 second to clear a slot (when not locked)
-- **Visual Feedback** - Icons indicate empty, filled, and locked states
-- **Persistent Storage** - Clips survive app restarts and profile switches
-- **Manual Clear** - Clear button in settings for quick reset
+- **One-click capture and paste**  
+  Click an empty button to capture the clipboard, click a filled button to paste
+
+- **Dynamic content**  
+  Captures whatever text is on your clipboard at the moment you press the button
+
+- **Prevent Clear mode**  
+  Optional lock to protect stored clips from being cleared
+
+- **Hold to clear**  
+  Press and hold for one second to clear a slot when it is not locked
+
+- **Visual feedback**  
+  Icons show whether a slot is empty, filled, or locked
+
+- **Persistent storage**  
+  Stored clips survive app restarts and profile switches
+
+- **Manual clear option**  
+  Clear a slot instantly using a button in the settings panel
 
 ## Installation
 
-### From Stream Deck Marketplace (Recommended)
+### From the Stream Deck Marketplace (Pending Publication)
 
 1. Open the Stream Deck application
-2. Navigate to the Marketplace
+2. Go to the Marketplace
 3. Search for "Quick Clips"
 4. Click Install
 
@@ -33,7 +46,7 @@ Useful for text that changes throughout your workflow—temporarily storing code
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/quick-clips.git
+   git clone https://github.com/glmorgan/quick-clips.git
    cd quick-clips
    ```
 
@@ -59,43 +72,46 @@ Useful for text that changes throughout your workflow—temporarily storing code
 
 ### Basic Usage
 
-1. **Add a Quick Clip button** to your Stream Deck from the Actions panel
-2. **Click the empty button** to capture current clipboard content
-3. **Click the filled button** to paste stored content into the active app
-4. **Hold for 1 second** to clear the slot (displays "Release to Clear" feedback)
+1. Add a Quick Clips button to your Stream Deck from the Actions panel
+2. Click an empty button to capture the current clipboard contents
+3. Click a filled button to paste the stored text into the active application
+4. Press and hold for one second to clear the slot. You will see a "Release to Clear" message while holding
 
 ### Advanced Features
 
 #### Prevent Clear (Lock Mode)
-Enable this in the button's property inspector to:
-- Disable hold-to-clear functionality
-- Show a lock icon to indicate protected status
-- Preserve clips from accidental clearing
 
-You can still manually clear using the "Clear Stored Content" button in settings.
+Enable this option in the button’s property inspector to:
+
+- Disable the hold to clear behavior
+- Show a lock icon to indicate the slot is protected
+- Prevent accidental clearing of important clips
+
+You can still clear the slot manually using the **Clear Stored Content** button in the settings.
 
 #### Visual States
 
-The button displays different icons based on its state:
+Each button updates its icon based on its current state:
 
 | State | Icon | Description |
-|-------|------|-------------|
-| Empty (unlocked) | Gray clipboard | Ready to capture |
-| Empty (locked) | Locked clipboard | Protected, ready to capture |
-| Filled (unlocked) | Blue clipboard | Contains content, can be cleared |
-| Filled (locked) | Lock icon | Protected content |
+|------|------|-------------|
+| Empty, unlocked | Gray clipboard | Ready to capture |
+| Empty, locked | Locked clipboard | Protected and ready to capture |
+| Filled, unlocked | Blue clipboard | Contains content and can be cleared |
+| Filled, locked | Lock icon | Contains protected content |
 
 ### Property Inspector
 
-Right-click any Quick Clip button to access:
-- **Prevent Clear** checkbox - Enable/disable hold-to-clear
-- **Clear Stored Content** button - Manually reset the slot
+Right-click any Quick Clips button to access:
+
+- **Prevent Clear** checkbox to enable or disable hold to clear
+- **Clear Stored Content** button to manually reset the slot
 
 ## Platform Support
 
-- **macOS** - Supported (tested on macOS 10.15+)
-- **Windows** - Planned for future release
-- **Linux** - Planned for future release
+- **macOS**: Supported and tested on macOS 10.15 and later
+- **Windows**: Planned for a future release
+- **Linux**: Planned for a future release
 
 ## Development
 
@@ -116,10 +132,10 @@ streamdeck restart com.quickclips.streamdeck
 
 ## Technical Details
 
-- Built with TypeScript and the Elgato Stream Deck SDK v2.0
-- Uses native macOS clipboard utilities (pbpaste/pbcopy)
-- Settings stored persistently in Stream Deck profiles
-- No external dependencies or network access
+- Built with TypeScript using the Elgato Stream Deck SDK v2.0
+- Uses native macOS clipboard tools (pbpaste and pbcopy)
+- Settings are stored persistently within Stream Deck profiles
+- No external services or network access required
 
 ## License
 
@@ -131,5 +147,5 @@ Glen Morgan
 
 ## Support
 
-For issues, feature requests, or questions, please visit the [GitHub repository](https://github.com/yourusername/quick-clips/issues).
-
+For bugs, feature requests, or questions, please visit the GitHub issues page:
+https://github.com/glmorgan/quick-clips/issues
