@@ -35,23 +35,22 @@ This is especially useful for text that changes often, such as code snippets, AP
 
 ## Screenshots
 
-### Quick Clips in Action
-![Stream Deck with Quick Clips](docs/images/overview.png)
-*Multiple Quick Clip buttons showing different states*
 
 ### Button States
 
-| Empty | Filled | Locked (Empty) | Locked (Filled) |
-|-------|--------|----------------|-----------------|
-| ![Empty state](docs/images/empty.png) | ![Filled state](docs/images/filled.png) | ![Empty locked state](docs/images/empty-locked.png) | ![Locked state](docs/images/locked.png) |
-| Ready to capture | Displaying captured text | Protected, ready to capture | Protected with stored content |
+| Empty | Filled | Locked (Filled) | Locked (Empty) |
+|:-------:|:--------:|:----------------:|:-----------------:|
+| ![Empty state](docs/images/empty.png) | ![Filled state](docs/images/filled.png) | ![Locked state](docs/images/locked.png) | ![Empty locked state](docs/images/empty-locked.png) |
+| Ready to capture | Displaying captured text | Protected with stored content | Protected, ready to capture |
 
 ### Property Inspector
-![Settings panel](docs/images/property-inspector.png)
+![Settings panel](docs/images/settings-panel.png)
+
 *Settings panel with Prevent Clear checkbox and Clear Stored Content button*
 
 ### Hold-to-Clear
-![Hold to clear feedback](docs/images/hold-to-clear.png)
+![Hold to clear feedback](docs/images/release-clear.png)
+
 *Visual feedback when holding button to clear*
 
 ## Installation
@@ -102,7 +101,7 @@ This is especially useful for text that changes often, such as code snippets, AP
 
 #### Prevent Clear (Lock Mode)
 
-Enable this option in the button’s property inspector to:
+Enable this option in the button’s settings to:
 
 - Disable the hold to clear behavior
 - Show a lock icon to indicate the slot is protected
@@ -121,9 +120,9 @@ Each button updates its icon based on its current state:
 | Filled, unlocked | Blue clipboard | Contains content and can be cleared |
 | Filled, locked | Lock icon | Contains protected content |
 
-### Property Inspector
+### Button Settings
 
-Right-click any Quick Clips button to access:
+Click on the button from Settings to:
 
 - **Prevent Clear** checkbox to enable or disable hold to clear
 - **Clear Stored Content** button to manually reset the slot
