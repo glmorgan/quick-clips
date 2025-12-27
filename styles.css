@@ -104,7 +104,6 @@ h1 {
 
 .btn:hover {
     background: var(--primary-dark);
-    transform: scale(1.02);
 }
 
 .btn-secondary {
