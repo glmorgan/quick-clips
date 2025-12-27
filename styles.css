@@ -20,10 +20,9 @@
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
-    line-height: 1.47059;
+    font-family: 'Open Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
+    line-height: 1.6;
     font-weight: 400;
-    letter-spacing: -0.022em;
     color: var(--text);
     background: var(--bg);
     -webkit-font-smoothing: antialiased;
@@ -234,13 +233,14 @@ h3:first-child {
 }
 
 .button-item {
-    text-align: center;
+    text-align: left;
 }
 
 .button-item img {
     width: 140px;
     height: 140px;
     object-fit: cover;
+
 }
 
 .button-item figcaption {
@@ -248,8 +248,23 @@ h3:first-child {
     color: var(--text-light);
 }
 
-.screenshot-large {
+.button-item-centered {
     text-align: center;
+}
+
+.button-item-centered img {
+    width: 140px;
+    height: 140px;
+    object-fit: cover;
+}
+
+.button-item-centered figcaption {
+    font-size: 0.875rem;
+    color: var(--text-light);
+}
+
+.screenshot-large {
+    text-align: left;
     margin: 2rem 0;
 }
 
@@ -257,9 +272,6 @@ h3:first-child {
     max-width: 600px;
     width: 100%;
     height: auto;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-    margin-bottom: 0.5rem;
 }
 
 .screenshot-large figcaption {
@@ -377,10 +389,24 @@ code {
 footer {
     background: var(--bg-alt);
     border-top: 1px solid var(--border);
-    padding: 2rem 0;
+    padding: 1.5rem 0;
     margin-top: 4rem;
-    text-align: center;
     color: var(--text-light);
+}
+
+.footer-content {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.footer-left,
+.footer-right {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
 }
 
 footer a {

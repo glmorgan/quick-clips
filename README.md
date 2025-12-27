@@ -43,7 +43,7 @@ This is especially useful for text that changes often, such as code snippets, AP
 | ![Empty state](docs/images/empty.png) | ![Filled state](docs/images/filled.png) | ![Locked state](docs/images/locked.png) | ![Empty locked state](docs/images/empty-locked.png) |
 | Ready to capture | Displaying captured text | Protected with stored content | Protected, ready to capture |
 
-### Property Inspector
+### Settings Panel
 ![Settings panel](docs/images/settings-panel.png)
 
 *Settings panel with Prevent Clear checkbox and Clear Stored Content button*
@@ -87,6 +87,9 @@ This is especially useful for text that changes often, such as code snippets, AP
    ```
 
 5. Restart Stream Deck
+   ```bash
+   streamdeck restart com.quickclips.streamdeck
+   ```
 
 ## How It Works
 
