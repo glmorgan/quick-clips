@@ -86,10 +86,14 @@ This is especially useful for text that changes often, such as code snippets, AP
      "$HOME/Library/Application Support/com.elgato.StreamDeck/Plugins/"
    ```
 
-5. Restart Stream Deck
+5. Restart Stream Deck (choose one):
+   
+   **Option 1:** Using CLI (requires `npm install -g @elgato/streamdeck-cli`)
    ```bash
    streamdeck restart com.quickclips.streamdeck
    ```
+   
+   **Option 2:** Manually quit and reopen the Stream Deck application
 
 ## How It Works
 

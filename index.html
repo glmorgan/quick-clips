@@ -135,21 +135,56 @@
             <div class="install-steps">
                 <ol>
                     <li>Clone this repository:
-                        <pre><code>git clone https://github.com/glmorgan/quick-clips.git
+                        <div class="code-block">
+                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                            <pre><code>git clone https://github.com/glmorgan/quick-clips.git && \
 cd quick-clips</code></pre>
+                        </div>
                     </li>
                     <li>Install dependencies:
-                        <pre><code>npm install</code></pre>
+                        <div class="code-block">
+                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                            <pre><code>npm install</code></pre>
+                        </div>
                     </li>
                     <li>Build the plugin:
-                        <pre><code>npm run build</code></pre>
+                        <div class="code-block">
+                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                            <pre><code>npm run build</code></pre>
+                        </div>
                     </li>
                     <li>Link the plugin to Stream Deck:
-                        <pre><code>ln -s "$(pwd)/com.quickclips.streamdeck.sdPlugin" \
+                        <div class="code-block">
+                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                            <pre><code>ln -s "$(pwd)/com.quickclips.streamdeck.sdPlugin" \
   "$HOME/Library/Application Support/com.elgato.StreamDeck/Plugins/"</code></pre>
+                        </div>
                     </li>
-                    <li>Restart Stream Deck
-                        <pre><code>streamdeck restart com.quickclips.streamdeck</code></pre>
+                    <li>Restart Stream Deck (select one option):
+                        <ol type="a" style="margin-top: 0.5rem;">
+                            <li style="margin-bottom: 1rem;">
+                                <strong>Option 1: Using CLI</strong>
+                                <p style="margin: 0.25rem 0 0.5rem 0; color: var(--text-light); font-size: 0.9rem;">
+                                    Install the Stream Deck CLI:</p>
+                                <div class="code-block">
+                                    <button class="copy-btn" onclick="copyCode(this)"><i
+                                            class="fas fa-copy"></i></button>
+                                    <pre><code>npm install -g @elgato/streamdeck-cli</code></pre>
+                                </div>
+                                <p style="margin: 0.5rem 0 0.25rem 0; color: var(--text-light); font-size: 0.9rem;">Then
+                                    restart the plugin:</p>
+                                <div class="code-block">
+                                    <button class="copy-btn" onclick="copyCode(this)"><i
+                                            class="fas fa-copy"></i></button>
+                                    <pre><code>streamdeck restart com.quickclips.streamdeck</code></pre>
+                                </div>
+                            </li>
+                            <li>
+                                <strong>Option 2: Manual restart</strong>
+                                <p style="margin: 0.25rem 0 0; color: var(--text-light); font-size: 0.9rem;">Quit and
+                                    reopen the Stream Deck application</p>
+                            </li>
+                        </ol>
                     </li>
                 </ol>
             </div>
@@ -237,7 +272,7 @@ cd quick-clips</code></pre>
         <div class="container">
             <div class="footer-content">
                 <div class="footer-left">
-                    <strong>Quick Clips</strong>  by Glen Morgan • Licensed under MIT
+                    <strong>Quick Clips</strong> by Glen Morgan • Licensed under MIT
                 </div>
                 <div class="footer-right">
                     <a href="https://github.com/glmorgan/quick-clips"><i class="fab fa-github"></i> GitHub</a> •
@@ -246,6 +281,24 @@ cd quick-clips</code></pre>
             </div>
         </div>
     </footer>
+
+    <script>
+        function copyCode(button) {
+            const codeBlock = button.nextElementSibling;
+            const code = codeBlock.querySelector('code').textContent;
+            navigator.clipboard.writeText(code).then(() => {
+                const icon = button.querySelector('i');
+                icon.classList.remove('fa-copy');
+                icon.classList.add('fa-check');
+                button.style.color = '#10b981';
+                setTimeout(() => {
+                    icon.classList.remove('fa-check');
+                    icon.classList.add('fa-copy');
+                    button.style.color = '';
+                }, 2000);
+            });
+        }
+    </script>
 </body>
 
 </html>
