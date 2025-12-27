@@ -41,7 +41,7 @@ This is especially useful for text that changes often, such as code snippets, AP
 | Empty | Filled | Locked (Filled) | Locked (Empty) |
 |:-------:|:--------:|:----------------:|:-----------------:|
 | ![Empty state](docs/images/empty.png) | ![Filled state](docs/images/filled.png) | ![Locked state](docs/images/locked.png) | ![Empty locked state](docs/images/empty-locked.png) |
-| Ready to capture | Displaying captured text | Protected with stored content | Protected, ready to capture |
+| Ready to be assigned from clipboard | Displaying captured text | Protected with stored content | Protected, ready to be assigned from clipboard |
 
 ### Settings Panel
 ![Settings panel](docs/images/settings-panel.png)
@@ -122,10 +122,10 @@ Each button updates its icon based on its current state:
 
 | State | Icon | Description |
 |------|------|-------------|
-| Empty, unlocked | Gray clipboard | Ready to capture |
-| Empty, locked | Locked clipboard | Protected and ready to capture |
-| Filled, unlocked | Blue clipboard | Contains content and can be cleared |
-| Filled, locked | Lock icon | Contains protected content |
+| Empty, unlocked | Gray clipboard | Ready to be assigned from clipboard |
+| Empty, locked | Locked clipboard | Protected and ready to be assigned from clipboard |
+| Filled, unlocked | Blue clipboard | Ready to paste; can be cleared |
+| Filled, locked | Lock icon | Ready to paste; protected from being overwritten |
 
 ### Button Settings
 
