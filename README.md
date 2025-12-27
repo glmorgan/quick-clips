@@ -1,6 +1,6 @@
 # Quick Clips
 
-Quick Clips is a Stream Deck plugin that gives you simple, reusable clipboard slots for capturing, storing, and pasting text whenever you need it.
+Turn your Elgato Stream Deck into a set of reusable clipboard slots. Capture text once, paste it on demand, clear it when you're done, and reuse the button for whatever comes next. All without touching the Stream Deck UI.
 
 ## What It Does
 
