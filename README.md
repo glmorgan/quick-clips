@@ -33,6 +33,27 @@ This is especially useful for text that changes often, such as code snippets, AP
 - **Manual clear option**  
   Clear a slot instantly using a button in the settings panel
 
+## Screenshots
+
+### Quick Clips in Action
+![Stream Deck with Quick Clips](docs/images/overview.png)
+*Multiple Quick Clip buttons showing different states*
+
+### Button States
+
+| Empty | Filled | Locked (Empty) | Locked (Filled) |
+|-------|--------|----------------|-----------------|
+| ![Empty state](docs/images/empty.png) | ![Filled state](docs/images/filled.png) | ![Empty locked state](docs/images/empty-locked.png) | ![Locked state](docs/images/locked.png) |
+| Ready to capture | Displaying captured text | Protected, ready to capture | Protected with stored content |
+
+### Property Inspector
+![Settings panel](docs/images/property-inspector.png)
+*Settings panel with Prevent Clear checkbox and Clear Stored Content button*
+
+### Hold-to-Clear
+![Hold to clear feedback](docs/images/hold-to-clear.png)
+*Visual feedback when holding button to clear*
+
 ## Installation
 
 ### From the Stream Deck Marketplace (Pending Publication)
