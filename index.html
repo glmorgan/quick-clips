@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Quick Clips - A Stream Deck plugin for dynamic clipboard management">
+    <title>Quick Clips - Stream Deck Plugin</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <header>
+        <div class="container">
+            <div class="header-content">
+                <h1>Quick Clips</h1>
+                <div class="header-links">
+                    <a href="https://github.com/glmorgan/quick-clips" class="btn btn-secondary"><i
+                            class="fab fa-github"></i> View on GitHub</a>
+                    <a href="#installation" class="btn">Get Started</a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <section class="hero">
+            <p>A Stream Deck plugin that gives you simple, reusable clipboard slots for capturing, storing, and pasting
+                text whenever you need it.</p>
+            <img src="docs/images/overview.png" alt="Quick Clips on Stream Deck" class="hero-image">
+        </section>
+
+        <section id="what-it-does">
+            <h2>What It Does</h2>
+            <p>Quick Clips turns Stream Deck buttons into flexible clipboard slots. Instead of setting up static text
+                buttons in the Stream Deck UI, each button can grab whatever text is currently on your clipboard with a
+                single press.</p>
+            <p>Keep a few Quick Clip buttons on your Stream Deck. When you copy something you want to reuse, press an
+                empty button to store it. Press the same button again to paste it into the active app. When you are
+                finished with that text, press and hold to clear the slot so it is ready for the next clip. There is no
+                need to open the Stream Deck configuration UI during your workflow.</p>
+            <p>This is especially useful for text that changes often, such as code snippets, API values, email
+                addresses, URLs, or anything you need to paste multiple times before moving on.</p>
+        </section>
+
+        <section id="features">
+            <h2>Features</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h3><i class="fas fa-hand-pointer"></i> One-click capture and paste</h3>
+                    <p>Click an empty button to capture the clipboard, click a filled button to paste</p>
+                </div>
+                <div class="feature-card">
+                    <h3><i class="fas fa-sync-alt"></i> Dynamic content</h3>
+                    <p>Captures whatever text is on your clipboard at the moment you press the button</p>
+                </div>
+                <div class="feature-card">
+                    <h3><i class="fas fa-lock"></i> Prevent Clear mode</h3>
+                    <p>Optional lock to protect stored clips from being cleared</p>
+                </div>
+                <div class="feature-card">
+                    <h3><i class="fas fa-stopwatch"></i> Hold to clear</h3>
+                    <p>Press and hold for one second to clear a slot when it is not locked</p>
+                </div>
+                <div class="feature-card">
+                    <h3><i class="fas fa-eye"></i> Visual feedback</h3>
+                    <p>Icons show whether a slot is empty, filled, or locked</p>
+                </div>
+                <div class="feature-card">
+                    <h3><i class="fas fa-database"></i> Persistent storage</h3>
+                    <p>Stored clips survive app restarts and profile switches</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="screenshots">
+            <h2>Screenshots</h2>
+
+            <h3>Button States</h3>
+            <div class="screenshot-grid">
+                <figure class="button-item">
+                    <img src="docs/images/empty.png" alt="Empty state">
+                    <figcaption>Ready to capture</figcaption>
+                </figure>
+                <figure class="button-item">
+                    <img src="docs/images/filled.png" alt="Filled state">
+                    <figcaption>Displaying captured text</figcaption>
+                </figure>
+                <figure class="button-item">
+                    <img src="docs/images/locked.png" alt="Locked state">
+                    <figcaption>Protected with stored content</figcaption>
+                </figure>
+                <figure class="button-item">
+                    <img src="docs/images/empty-locked.png" alt="Empty locked state">
+                    <figcaption>Protected, ready to capture</figcaption>
+                </figure>
+            </div>
+
+            <h3>Property Inspector</h3>
+            <figure class="screenshot-large">
+                <img src="docs/images/settings-panel.png" alt="Settings panel">
+                <figcaption>Settings panel with Prevent Clear checkbox and Clear Stored Content button</figcaption>
+            </figure>
+
+            <h3>Hold-to-Clear</h3>
+            <figure class="button-item">
+                <img src="docs/images/release-clear.png" alt="Hold to clear feedback">
+                <figcaption>Visual feedback when holding button to clear</figcaption>
+            </figure>
+        </section>
+
+        <section id="installation">
+            <h2>Installation</h2>
+
+            <h3>From the Stream Deck Marketplace (Pending Publication)</h3>
+            <div class="install-steps">
+                <ol>
+                    <li>Open the Stream Deck application</li>
+                    <li>Go to the Marketplace</li>
+                    <li>Search for "Quick Clips"</li>
+                    <li>Click Install</li>
+                </ol>
+            </div>
+
+            <h3>Manual Installation (Development)</h3>
+            <div class="install-steps">
+                <ol>
+                    <li>Clone this repository:
+                        <pre><code>git clone https://github.com/glmorgan/quick-clips.git
+cd quick-clips</code></pre>
+                    </li>
+                    <li>Install dependencies:
+                        <pre><code>npm install</code></pre>
+                    </li>
+                    <li>Build the plugin:
+                        <pre><code>npm run build</code></pre>
+                    </li>
+                    <li>Link the plugin to Stream Deck:
+                        <pre><code>ln -s "$(pwd)/com.quickclips.streamdeck.sdPlugin" \
+  "$HOME/Library/Application Support/com.elgato.StreamDeck/Plugins/"</code></pre>
+                    </li>
+                    <li>Restart Stream Deck</li>
+                </ol>
+            </div>
+        </section>
+
+        <section id="how-it-works">
+            <h2>How It Works</h2>
+
+            <h3>Basic Usage</h3>
+            <ol>
+                <li>Add a Quick Clips button to your Stream Deck from the Actions panel</li>
+                <li>Click an empty button to capture the current clipboard contents</li>
+                <li>Click a filled button to paste the stored text into the active application</li>
+                <li>Press and hold for one second to clear the slot. You will see a "Release to Clear" message while
+                    holding</li>
+            </ol>
+
+            <h3>Visual States</h3>
+            <table class="state-table">
+                <thead>
+                    <tr>
+                        <th>State</th>
+                        <th>Icon</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Empty, unlocked</td>
+                        <td><img src="docs/images/empty.png" alt="Gray clipboard"></td>
+                        <td>Ready to capture</td>
+                    </tr>
+                    <tr>
+                        <td>Empty, locked</td>
+                        <td><img src="docs/images/empty-locked.png" alt="Locked clipboard"></td>
+                        <td>Protected and ready to capture</td>
+                    </tr>
+                    <tr>
+                        <td>Filled, unlocked</td>
+                        <td><img src="docs/images/filled.png" alt="Blue clipboard"></td>
+                        <td>Contains content and can be cleared</td>
+                    </tr>
+                    <tr>
+                        <td>Filled, locked</td>
+                        <td><img src="docs/images/locked.png" alt="Lock icon"></td>
+                        <td>Contains protected content</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section id="platform-support">
+            <h2>Platform Support</h2>
+            <div class="platform-support">
+                <div class="platform">
+                    <strong>macOS:</strong>
+                    <span class="platform-badge supported">Supported</span>
+                    <span style="color: var(--text-light);">Tested on macOS 10.15+</span>
+                </div>
+                <div class="platform">
+                    <strong>Windows:</strong>
+                    <span class="platform-badge planned">Planned</span>
+                    <span style="color: var(--text-light);">Future release</span>
+                </div>
+                <div class="platform">
+                    <strong>Linux:</strong>
+                    <span class="platform-badge planned">Planned</span>
+                    <span style="color: var(--text-light);">Future release</span>
+                </div>
+            </div>
+        </section>
+
+        <section id="technical-details">
+            <h2>Technical Details</h2>
+            <ul style="margin-left: 1.5rem; color: var(--text-light);">
+                <li>Built with TypeScript using the Elgato Stream Deck SDK v2.0</li>
+                <li>Uses native macOS clipboard tools (pbpaste and pbcopy)</li>
+                <li>Settings are stored persistently within Stream Deck profiles</li>
+                <li>No external services or network access required</li>
+            </ul>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>
+                <strong>Quick Clips</strong> by Glen Morgan
+                <br>
+                Licensed under MIT
+                <br>
+                <a href="https://github.com/glmorgan/quick-clips">GitHub</a> •
+                <a href="https://github.com/glmorgan/quick-clips/issues">Issues</a>
+            </p>
+        </div>
+    </footer>
+</body>
+
+</html>
