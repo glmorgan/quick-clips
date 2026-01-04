@@ -353,6 +353,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
                 // Hold threshold reached - enter clear mode
                 tracker.clearMode = true;
                 await ev.action.setTitle("Release\nto Clear");
+                await ev.action.setImage("imgs/actions/clipboard/release-to-clear.png");
             }, LONG_PRESS_THRESHOLD),
             clearMode: false
         };
