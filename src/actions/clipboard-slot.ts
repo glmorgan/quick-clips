@@ -1,4 +1,4 @@
-import { action, KeyDownEvent, KeyUpEvent, SingletonAction, WillAppearEvent, DidReceiveSettingsEvent, SendToPluginEvent, streamDeck } from "@elgato/streamdeck";
+import { action, KeyDownEvent, KeyUpEvent, SingletonAction, WillAppearEvent, WillDisappearEvent, DidReceiveSettingsEvent, SendToPluginEvent, streamDeck } from "@elgato/streamdeck";
 import { spawn } from "child_process";
 import { exec } from "child_process";
 import { promisify } from "util";
@@ -106,11 +106,31 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
      */
     private async simulatePaste(): Promise<void> {
         try {
-            // Use AppleScript to simulate Cmd+V keystroke
             await execAsync('osascript -e \'tell application "System Events" to keystroke "v" using command down\'');
         } catch (error) {
             streamDeck.logger.error("Failed to simulate paste:", error);
         }
+    }
+
+    private async simulateTyping(text: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            // Split on double quotes and rejoin with AppleScript quote variable to handle
+            // arbitrary text without breaking the AppleScript string literal
+            const parts = text.split('"').map(p => `"${p}"`);
+            const asString = parts.join(' & quote & ');
+            const script = `tell application "System Events" to keystroke ${asString}`;
+            const proc = spawn('osascript', ['-']);
+            proc.stdin.write(script);
+            proc.stdin.end();
+            proc.on('error', (error) => {
+                streamDeck.logger.error("Failed to simulate typing:", error);
+                reject(error);
+            });
+            proc.on('close', (code) => {
+                if (code === 0) resolve();
+                else reject(new Error(`osascript exited with code ${code}`));
+            });
+        });
     }
 
     /**
@@ -259,9 +279,19 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
      * @returns {Promise<void>} Resolves when initialization is complete
      */
     override async onWillAppear(ev: WillAppearEvent<SlotSettings>): Promise<void> {
-        // Always fetch fresh settings to avoid stale data
         const settings = await ev.action.getSettings();
+        if (settings.pasteMode === undefined) {
+            await ev.action.setSettings({ ...settings, pasteMode: 'typing' });
+        }
         await this.updateDisplay(ev, settings);
+    }
+
+    override onWillDisappear(ev: WillDisappearEvent<SlotSettings>): void {
+        const tracker = this.holdTrackers.get(ev.action.id);
+        if (tracker?.timer) {
+            clearTimeout(tracker.timer);
+        }
+        this.holdTrackers.delete(ev.action.id);
     }
 
     /**
@@ -416,9 +446,12 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
      */
     private async handleClick(ev: KeyUpEvent<SlotSettings>, settings: SlotSettings): Promise<void> {
         if (settings.value) {
-            // Filled state: Copy stored value to clipboard and paste
-            await this.writeClipboard(settings.value);
-            await this.simulatePaste();
+            if ((settings.pasteMode ?? 'typing') === 'typing') {
+                await this.simulateTyping(settings.value);
+            } else {
+                await this.writeClipboard(settings.value);
+                await this.simulatePaste();
+            }
             await ev.action.showOk();
         } else {
             // Empty state: Capture clipboard content into slot
@@ -435,6 +468,8 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
                 await ev.action.setSettings(newSettings);
                 await this.updateDisplay(ev, newSettings);
                 await ev.action.showOk();
+            } else {
+                await ev.action.showAlert();
             }
         }
     }
@@ -486,4 +521,7 @@ type SlotSettings = {
 
     /** If true, disable hold-to-clear functionality */
     suppressClear?: boolean;
+
+    /** How to output stored text on paste: simulate typing (default) or clipboard paste */
+    pasteMode?: 'typing' | 'clipboard';
 };
