@@ -8,7 +8,7 @@
 
 - [x] **Hold tracker memory leak** — `holdTrackers` entries are removed on `onKeyUp` but not on button removal. Add `onWillDisappear` to clean up the entry for that `contextId` so removed buttons don't leak timers.
 
-- [ ] **Property inspector shadow DOM hack** — the "Clear Content" button manually clicks into the `<sdpi-delegate>` shadow root to trigger `clearSlot`. This is fragile against `sdpi-components.js` updates. Investigate whether a direct `sendToPlugin` call from a plain `<button>` click handler is possible without the delegate.
+- [x] **Property inspector shadow DOM hack** — the "Clear Content" button manually clicks into the `<sdpi-delegate>` shadow root to trigger `clearSlot`. This is fragile against `sdpi-components.js` updates. Investigate whether a direct `sendToPlugin` call from a plain `<button>` click handler is possible without the delegate.
 
 ---
 
