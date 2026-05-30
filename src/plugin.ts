@@ -11,9 +11,17 @@
  * @platform macOS
  */
 
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 import streamDeck from "@elgato/streamdeck";
 
 import { ClipboardSlot } from "./actions/clipboard-slot";
+import { ClipboardUtils } from "./actions/clipboard-utils";
+
+// When relaunched via `streamdeck restart`, process.cwd() may be the repo root
+// rather than the sdPlugin directory. The SDK uses process.cwd() to find manifest.json,
+// so we fix it here before any SDK calls.
+process.chdir(join(dirname(fileURLToPath(import.meta.url)), ".."));
 
 /**
  * Configure logging level for the plugin.
@@ -36,6 +44,7 @@ streamDeck.logger.setLevel("info");
  * The ClipboardSlot action provides clipboard capture, storage, and paste functionality.
  */
 streamDeck.actions.registerAction(new ClipboardSlot());
+streamDeck.actions.registerAction(new ClipboardUtils());
 
 /**
  * Establish connection with the Stream Deck application.

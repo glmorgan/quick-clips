@@ -16,13 +16,12 @@
 
 - [ ] **Multi-slot clipboard history per button** — instead of one stored value, cycle through a small history (e.g. last 3 clips). Short press pastes the most recent; hold cycles to the next. Useful for users who frequently rotate between a small set of values.
 
-- [ ] **Text transformation options** — optional per-button transforms applied on paste: UPPERCASE, lowercase, trim whitespace, strip formatting. Adds power-user appeal without changing the core workflow.
+- [x] **Text transformation options** — implemented as new Quick Utils action; copy text, press button, pick transform from native dialog, result written to clipboard — optional per-button transforms applied on paste: UPPERCASE, lowercase, trim whitespace, strip formatting. Adds power-user appeal without changing the core workflow.
 
-- [ ] **Named slots / custom labels** — let users type a static name in the property inspector that overrides the auto-generated label. Useful for semi-permanent clips (e.g. a button always labeled "Email" that stores whichever email address is current).
+- [x] **Named slots / custom labels** — covered by Stream Deck's native title field, which already overrides the plugin's auto-generated label when set.
 
 - [x] **Simulate typing paste mode** — per-button setting; default is simulate typing (doesn't clobber clipboard); fallback is clipboard paste (Cmd+V) — an "Enter text manually" field in the property inspector to pre-fill a slot without needing it on the clipboard first. Opens the plugin to static snippets as a use case.
 
-- [ ] **Copy-only mode** — an option to capture to the slot without immediately being usable for paste (i.e. just a storage action), useful for users building a set of clips before starting a paste-heavy task.
 
 ---
 
@@ -44,7 +43,6 @@
 
 - [ ] **Sequence mode** — a button that pastes clips in order each press (clip 1, then clip 2, then clip 3, then loops). Useful for multi-step form filling or repetitive data entry.
 
-- [ ] **Shared clipboard pool** — optional sync across buttons on the same deck so one "capture" button fills multiple paste buttons simultaneously (e.g. capture once, paste in multiple apps).
 
 - [ ] **Expiring clips** — clips that auto-clear after N minutes or after first paste. Useful for one-time values like OTPs or temp passwords where leaving them stored is a security risk.
 

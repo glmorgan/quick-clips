@@ -24,6 +24,28 @@
 					"Name": "Filled"
 				}
 			]
+		},
+		{
+			"Name": "Quick Utils",
+			"UUID": "com.quickclips.streamdeck.clipboard-utils",
+			"Icon": "imgs/actions/clipboard/icon",
+			"Tooltip": "Transform clipboard text. Click to set transform, click again to apply.",
+			"PropertyInspectorPath": "ui/clipboard-utils.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/clipboard/empty",
+					"TitleAlignment": "middle",
+					"Name": "Empty"
+				},
+				{
+					"Image": "imgs/actions/clipboard/filled",
+					"TitleAlignment": "middle",
+					"Name": "Active"
+				}
+			]
 		}
 	],
 	"Category": "Quick Clips",
