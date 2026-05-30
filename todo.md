@@ -2,7 +2,7 @@
 
 ## Bug Fixes / Rough Edges
 
-- [ ] **Windows clipboard support** — manifest declares Windows 10+ but all clipboard ops use `pbpaste`/`pbcopy`/`osascript`. Need `clip.exe` / PowerShell equivalents and runtime platform detection, or remove Windows from manifest until implemented.
+- [ ] **Windows clipboard support** — removed from manifest until a Windows machine is available for testing. Will need `clip.exe` / PowerShell equivalents and runtime platform detection.
 
 - [x] **Silent failure on empty clipboard** — pressing an empty slot when clipboard is also empty does nothing and shows no feedback. Should call `showAlert()` or briefly show a message so the user knows why nothing happened.
 
