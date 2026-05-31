@@ -8,6 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 npm install          # Install dependencies
 npm run build        # One-time build → com.quickclips.streamdeck.sdPlugin/bin/plugin.js
 npm run watch        # Build + watch; auto-restarts plugin on save via `streamdeck restart`
+npm test             # Run tests (vitest)
+npm run test:watch   # Run tests in watch mode
 streamdeck restart com.quickclips.streamdeck  # Manually restart plugin in Stream Deck
 npx streamdeck dev   # Enable developer mode (required for streamdeck restart and plugin logging)
 tail -f com.quickclips.streamdeck.sdPlugin/logs/com.quickclips.streamdeck.0.log  # Plugin logs

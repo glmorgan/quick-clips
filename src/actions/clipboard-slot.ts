@@ -1,4 +1,5 @@
 import { action, KeyDownEvent, KeyUpEvent, SingletonAction, WillAppearEvent, WillDisappearEvent, DidReceiveSettingsEvent, SendToPluginEvent, streamDeck } from "@elgato/streamdeck";
+import { generateLabel } from "../utils.js";
 import { spawn } from "child_process";
 import { exec } from "child_process";
 import { promisify } from "util";
@@ -149,59 +150,6 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
      * generateLabel("Hello World") // Returns: "Hello\nWorld"
      * generateLabel("This is a very long text") // Returns: "This is\na very…"
      */
-    private generateLabel(text: string): string {
-        // Remove newlines and extra whitespace for cleaner display
-        const cleanText = text.replace(/\s+/g, ' ').trim();
-
-        const maxCharsPerLine = 7;
-        const maxLines = 2;
-        const maxTotalChars = maxCharsPerLine * maxLines;
-
-        if (cleanText.length <= maxCharsPerLine) {
-            // Fits on one line
-            return cleanText;
-        } else if (cleanText.length <= maxTotalChars) {
-            // Fits in 2 lines - try to break at word boundary
-            let breakPoint = cleanText.lastIndexOf(' ', maxCharsPerLine);
-
-            if (breakPoint === -1 || breakPoint < 3) {
-                // No good word boundary, break at max chars
-                breakPoint = maxCharsPerLine;
-            }
-
-            const line1 = cleanText.substring(0, breakPoint).trim();
-            const line2 = cleanText.substring(breakPoint).trim();
-            return `${line1}\n${line2}`;
-        } else {
-            // Too long - truncate to fit in 2 lines with ellipsis
-            // Reserve space for ellipsis on line 2
-            const line2MaxChars = maxCharsPerLine - 1; // Leave room for …
-
-            // Find break point for line 1
-            let breakPoint = cleanText.lastIndexOf(' ', maxCharsPerLine);
-            if (breakPoint === -1 || breakPoint < 3) {
-                breakPoint = maxCharsPerLine;
-            }
-
-            const line1 = cleanText.substring(0, breakPoint).trim();
-            const remainingText = cleanText.substring(breakPoint).trim();
-
-            // Truncate line 2 if needed
-            let line2 = remainingText;
-            if (line2.length > line2MaxChars) {
-                // Try to break at word boundary
-                const line2Break = line2.lastIndexOf(' ', line2MaxChars);
-                if (line2Break > 3) {
-                    line2 = line2.substring(0, line2Break).trim();
-                } else {
-                    line2 = line2.substring(0, line2MaxChars);
-                }
-            }
-
-            return `${line1}\n${line2}…`;
-        }
-    }
-
     /**
      * Updates the button's visual appearance to reflect current slot state and settings.
      * 
@@ -462,7 +410,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
                 const newSettings: SlotSettings = {
                     ...settings,
                     value: clipboardText,
-                    label: this.generateLabel(clipboardText)
+                    label: generateLabel(clipboardText)
                 };
 
                 await ev.action.setSettings(newSettings);
