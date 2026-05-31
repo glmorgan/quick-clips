@@ -23,8 +23,6 @@
                     <h1>Quick Clips</h1>
                 </div>
                 <div class="header-links">
-                    <a href="https://github.com/glmorgan/quick-clips" class="btn btn-secondary" target="_blank"
-                        rel="noopener noreferrer"><i class="fab fa-github"></i> View on GitHub</a>
                     <a href="#installation" class="btn"><i class="fas fa-play"></i> Get Started</a>
                 </div>
             </div>
@@ -48,7 +46,7 @@
                 empty button to store it. Press the same button again to paste it into the active app. When you are
                 finished with that text, press and hold to clear the slot so it is ready for the next clip. There's no
                 need to open the Stream Deck UI during your workflow.</p>
-            <p>Especially useful for text that changes often — code snippets, API values, email addresses, URLs, or
+            <p>Especially useful for text that changes often: code snippets, API values, email addresses, URLs, or
                 anything you need to paste multiple times before moving on.</p>
 
             <h3>Button States</h3>
@@ -109,7 +107,7 @@
         <section id="quick-text-utils">
             <h2>Quick Text Utils</h2>
             <p>Transform clipboard text without breaking your workflow. Copy text, press a configured button, and the
-                transformed result is ready to paste — no apps to open, no menus to navigate.</p>
+                transformed result is ready to paste: no apps to open, no menus to navigate.</p>
             <p>Each button is dedicated to a single transform. Press and hold for one second to reconfigure the button
                 to a different transform at any time.</p>
 
@@ -197,47 +195,18 @@
                 </ol>
             </div>
 
-            <h3>From the Stream Deck Marketplace (Pending Publication)</h3>
+            <h3>Updating from a Previous Version</h3>
             <div class="install-steps">
                 <ol>
                     <li>Open the Stream Deck application</li>
-                    <li>Go to the Marketplace</li>
-                    <li>Search for "Quick Clips"</li>
-                    <li>Click Install</li>
+                    <li>Go to <strong>Preferences → Plugins</strong></li>
+                    <li>Find Quick Clips and click <strong>Uninstall</strong></li>
+                    <li>Download and double-click the new version to install</li>
                 </ol>
+                <p>Your existing buttons and stored clips will not be affected.</p>
             </div>
 
-            <h3>Development Installation</h3>
-            <div class="install-steps">
-                <ol>
-                    <li>Clone this repository:
-                        <div class="code-block">
-                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
-                            <pre><code>git clone https://github.com/glmorgan/quick-clips.git && \
-cd quick-clips</code></pre>
-                        </div>
-                    </li>
-                    <li>Install dependencies and build:
-                        <div class="code-block">
-                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
-                            <pre><code>npm install && npm run build</code></pre>
-                        </div>
-                    </li>
-                    <li>Link the plugin to Stream Deck:
-                        <div class="code-block">
-                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
-                            <pre><code>ln -s "$(pwd)/com.quickclips.streamdeck.sdPlugin" \
-  "$HOME/Library/Application Support/com.elgato.StreamDeck/Plugins/"</code></pre>
-                        </div>
-                    </li>
-                    <li>Enable developer mode and restart:
-                        <div class="code-block">
-                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
-                            <pre><code>npx streamdeck dev && npx streamdeck restart com.quickclips.streamdeck</code></pre>
-                        </div>
-                    </li>
-                </ol>
-            </div>
+            <p style="color: var(--text-light);">For development installation see the <a href="https://github.com/glmorgan/quick-clips">GitHub repository</a>.</p>
         </section>
 
         <section id="platform-support">
@@ -261,7 +230,7 @@ cd quick-clips</code></pre>
             <ul style="margin-left: 1.5rem; color: var(--text-light);">
                 <li>Built with TypeScript using the Elgato Stream Deck SDK v2.0</li>
                 <li>Uses native macOS clipboard tools (pbpaste and pbcopy)</li>
-                <li>Text output via simulated keystrokes — clipboard is not overwritten on paste</li>
+                <li>Text output via simulated keystrokes: clipboard is not overwritten on paste</li>
                 <li>Settings are stored persistently within Stream Deck profiles</li>
                 <li>No external services or network access required</li>
             </ul>
