@@ -4,53 +4,75 @@
 
 - [ ] **Windows clipboard support** — removed from manifest until a Windows machine is available for testing. Will need `clip.exe` / PowerShell equivalents and runtime platform detection.
 
-- [x] **Silent failure on empty clipboard** — pressing an empty slot when clipboard is also empty does nothing and shows no feedback. Should call `showAlert()` or briefly show a message so the user knows why nothing happened.
+- [x] **Silent failure on empty clipboard** — `showAlert()` now fires when clipboard is empty on capture attempt.
 
-- [x] **Hold tracker memory leak** — `holdTrackers` entries are removed on `onKeyUp` but not on button removal. Add `onWillDisappear` to clean up the entry for that `contextId` so removed buttons don't leak timers.
+- [x] **Hold tracker memory leak** — `onWillDisappear` now cleans up the tracker entry on button removal.
 
-- [x] **Property inspector shadow DOM hack** — the "Clear Content" button manually clicks into the `<sdpi-delegate>` shadow root to trigger `clearSlot`. This is fragile against `sdpi-components.js` updates. Investigate whether a direct `sendToPlugin` call from a plain `<button>` click handler is possible without the delegate.
+- [x] **Property inspector shadow DOM hack** — replaced with direct `SDPIComponents.streamDeckClient.send()` call.
 
 ---
 
 ## Functional Improvements
 
-- [ ] **Multi-slot clipboard history per button** — instead of one stored value, cycle through a small history (e.g. last 3 clips). Short press pastes the most recent; hold cycles to the next. Useful for users who frequently rotate between a small set of values.
+- [ ] **Multi-slot clipboard history per button** — instead of one stored value, cycle through a small history (e.g. last 3 clips). Short press pastes the most recent; hold cycles to the next.
 
-- [x] **Text transformation options** — implemented as new Quick Utils action; copy text, press button, pick transform from native dialog, result written to clipboard — optional per-button transforms applied on paste: UPPERCASE, lowercase, trim whitespace, strip formatting. Adds power-user appeal without changing the core workflow.
+- [x] **Text transformation options** — implemented as Quick Text Utils action with 12 transforms plus word/char/line count. Hold 1s to reconfigure.
 
-- [x] **Named slots / custom labels** — covered by Stream Deck's native title field, which already overrides the plugin's auto-generated label when set.
+- [x] **Named slots / custom labels** — covered by Stream Deck's native title field.
 
-- [x] **Simulate typing paste mode** — per-button setting; default is simulate typing (doesn't clobber clipboard); fallback is clipboard paste (Cmd+V) — an "Enter text manually" field in the property inspector to pre-fill a slot without needing it on the clipboard first. Opens the plugin to static snippets as a use case.
-
+- [x] **Simulate typing paste mode** — per-button setting on both Quick Clips and Quick Text Utils; default is simulate typing.
 
 ---
 
-## Marketplace / Discovery Improvements
+## Marketplace Readiness
 
-- [ ] **Onboarding state** — first-time appearance (no settings ever set) could show "Copy text, then press me" as the title instead of "Empty" to make the interaction model self-documenting.
+- [ ] **Icon redesign** — redo Quick Clips icons in new style to match Quick Text Utils set. Need @2x variants for all.
 
-- [ ] **Discoverability of hold-to-clear** — consider a brief animation or title flash ("Hold 1s to clear") when a filled button is first pressed, before the long-press threshold fires. Users who never read docs often miss hold gestures entirely.
+  **Quick Clips** (`imgs/actions/clipboard/`):
+  - [ ] `empty.png` / `empty@2x.png`
+  - [ ] `empty-locked.png` / `empty-locked@2x.png`
+  - [ ] `filled.png` / `filled@2x.png`
+  - [ ] `locked.png` / `locked@2x.png`
+  - [ ] `release-to-clear.png` / `release-to-clear@2x.png`
+  - [ ] `icon.png` / `icon@2x.png` *(action icon in Stream Deck panel)*
 
-- [ ] **Windows implementation** — required for a wider marketplace audience. Clipboard: `Get-Clipboard` / `Set-Clipboard` via PowerShell. Paste simulation: `SendKeys` via PowerShell or a small native helper.
+  **Quick Text Utils** (`imgs/actions/utils/`): ✓ all done
+  - [x] `empty.png` / `empty@2x.png`
+  - [x] `configure.png` / `configure@2x.png`
+  - [x] `upper.png` / `upper@2x.png`
+  - [x] `lower.png` / `lower@2x.png`
+  - [x] `titlecase.png` / `titlecase@2x.png`
+  - [x] `camelcase.png` / `camelcase@2x.png`
+  - [x] `snakecase.png` / `snakecase@2x.png`
+  - [x] `dashcase.png` / `dashcase@2x.png`
+  - [x] `base64encode.png` / `base64encode@2x.png`
+  - [x] `base64decode.png` / `base64decode@2x.png`
+  - [x] `urlencode.png` / `urlencode@2x.png`
+  - [x] `urldecode.png` / `urldecode@2x.png`
+  - [x] `trim.png` / `trim@2x.png`
+  - [x] `count.png` / `count@2x.png`
+  - [x] `icon.png` / `icon@2x.png`
 
-- [ ] **Profile export/import** — a way to back up or share a set of named clips. Could be as simple as a JSON file the user drags in via the property inspector.
+  **Plugin-level** (`imgs/plugin/`):
+  - [ ] `category-icon.png` / `category-icon@2x.png`
+  - [ ] `marketplace.png` / `marketplace@2x.png` *(main plugin marketplace image)*
 
-- [ ] **Marketplace screenshots and demo GIF** — the docs/images folder has stills; a short GIF showing the capture → paste → clear workflow would significantly improve conversion on the marketplace listing.
+- [ ] **Website** — index.html updated; screenshots deferred until closer to public launch.
+
+- [ ] **Pack and submit** — `npx streamdeck pack` once icons and screenshots are complete. Validation passes with 4 @2x warnings (all icon-related).
+
+- [ ] **Onboarding state** — Quick Clips empty state could be more descriptive for first-time users.
+
+- [ ] **Discoverability of hold gestures** — hold-to-clear (Quick Clips) and hold-to-configure (Quick Text Utils) are not obvious without docs.
 
 ---
 
 ## Stretch / Interesting Variants
 
-- [ ] **Sequence mode** — a button that pastes clips in order each press (clip 1, then clip 2, then clip 3, then loops). Useful for multi-step form filling or repetitive data entry.
+- [ ] **Sequence mode** — button pastes clips in order each press (clip 1, clip 2, clip 3, loops). Useful for multi-step form filling.
 
+- [ ] **Expiring clips** — clips that auto-clear after N minutes or after first paste. Useful for OTPs or temp passwords.
 
-- [ ] **Expiring clips** — clips that auto-clear after N minutes or after first paste. Useful for one-time values like OTPs or temp passwords where leaving them stored is a security risk.
+- [ ] **Pattern templates** — store a template with a placeholder (e.g. `Hello {{name}}`), prompt for fill-in on paste.
 
-- [ ] **Pattern templates** — store a template with a placeholder (e.g. `Hello {{name}}`) and have the property inspector prompt for the fill-in value on paste. Bridges clipboard tool and text-snippet tool use cases.
-
-
-Stream Deck SDK
-This is a test of simulated typing
-Stream Deck SDK
-This is a test of simulated typing
-Stream Deck SDK
+- [ ] **Windows implementation** — required for wider marketplace audience.

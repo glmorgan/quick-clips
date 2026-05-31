@@ -17,18 +17,24 @@
     <sdpi-item label="Transform">
         <sdpi-select setting="transform">
             <option value="">— Select a transform —</option>
-            <option value="count">Count (words, chars, lines)</option>
-            <option value="base64encode">base64 encode</option>
-            <option value="base64decode">base64 decode</option>
-            <option value="camelCase">camelCase</option>
-            <option value="dashcase">dash-case</option>
-            <option value="lower">lower</option>
-            <option value="snakecase">snake_case</option>
-            <option value="titlecase">Title Case</option>
-            <option value="trim">Trim whitespace</option>
-            <option value="upper">UPPER</option>
-            <option value="urlencode">URL encode</option>
-            <option value="urldecode">URL decode</option>
+            <optgroup label="Case">
+                <option value="upper">To Upper</option>
+                <option value="lower">To Lower</option>
+                <option value="titlecase">To Title</option>
+                <option value="camelCase">To Camel</option>
+                <option value="snakecase">To Snake</option>
+                <option value="dashcase">To Dash</option>
+            </optgroup>
+            <optgroup label="Encode / Decode">
+                <option value="base64encode">B64 Encode</option>
+                <option value="base64decode">B64 Decode</option>
+                <option value="urlencode">URL Encode</option>
+                <option value="urldecode">URL Decode</option>
+            </optgroup>
+            <optgroup label="Utility">
+                <option value="trim">Trim</option>
+                <option value="count">Count</option>
+            </optgroup>
         </sdpi-select>
     </sdpi-item>
 </body>
