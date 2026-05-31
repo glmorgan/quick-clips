@@ -184,11 +184,18 @@
                 </div>
             </div>
 
-            <!-- TODO: Add screenshot of Quick Text Utils settings panel -->
         </section>
 
         <section id="installation">
             <h2>Installation</h2>
+
+            <h3>Direct Download</h3>
+            <div class="install-steps">
+                <ol>
+                    <li>Download <a href="https://github.com/glmorgan/quick-clips/releases/latest"><strong>com.quickclips.streamdeck.streamDeckPlugin</strong></a> from the latest release</li>
+                    <li>Double-click the downloaded file to install</li>
+                </ol>
+            </div>
 
             <h3>From the Stream Deck Marketplace (Pending Publication)</h3>
             <div class="install-steps">
@@ -200,7 +207,7 @@
                 </ol>
             </div>
 
-            <h3>Manual Installation (Development)</h3>
+            <h3>Development Installation</h3>
             <div class="install-steps">
                 <ol>
                     <li>Clone this repository:
@@ -210,16 +217,10 @@
 cd quick-clips</code></pre>
                         </div>
                     </li>
-                    <li>Install dependencies:
+                    <li>Install dependencies and build:
                         <div class="code-block">
                             <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
-                            <pre><code>npm install</code></pre>
-                        </div>
-                    </li>
-                    <li>Build the plugin:
-                        <div class="code-block">
-                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
-                            <pre><code>npm run build</code></pre>
+                            <pre><code>npm install && npm run build</code></pre>
                         </div>
                     </li>
                     <li>Link the plugin to Stream Deck:
@@ -229,11 +230,10 @@ cd quick-clips</code></pre>
   "$HOME/Library/Application Support/com.elgato.StreamDeck/Plugins/"</code></pre>
                         </div>
                     </li>
-                    <li>Enable developer mode and restart the plugin:
+                    <li>Enable developer mode and restart:
                         <div class="code-block">
                             <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
-                            <pre><code>npx streamdeck dev
-npx streamdeck restart com.quickclips.streamdeck</code></pre>
+                            <pre><code>npx streamdeck dev && npx streamdeck restart com.quickclips.streamdeck</code></pre>
                         </div>
                     </li>
                 </ol>

@@ -1,57 +1,6 @@
 # Quick Clips
 
-Turn your Elgato Stream Deck into a set of reusable clipboard slots. Capture text once, paste it on demand, clear it when you're done, and reuse the button for whatever comes next. All without touching the Stream Deck UI.
-
-## What It Does
-
-Quick Clips turns Stream Deck buttons into flexible clipboard slots. Instead of setting up static text buttons in the Stream Deck UI, each button can grab whatever text is currently on your clipboard with a single press.
-
-Keep a few Quick Clip buttons on your Stream Deck. When you copy something you want to reuse, press an empty button to store it. Press the same button again to paste it into the active app. When you are finished with that text, press and hold to clear the slot so it is ready for the next clip. There is no need to open the Stream Deck configuration UI during your workflow.
-
-This is especially useful for text that changes often, such as code snippets, API values, email addresses, URLs, or anything you need to paste multiple times before moving on.
-
-## Features
-
-- **One-click capture and paste**  
-  Click an empty button to capture the clipboard, click a filled button to paste
-
-- **Dynamic content**  
-  Captures whatever text is on your clipboard at the moment you press the button
-
-- **Prevent Clear mode**  
-  Optional lock to protect stored clips from being cleared
-
-- **Hold to clear**  
-  Press and hold for one second to clear a slot when it is not locked
-
-- **Visual feedback**  
-  Icons show whether a slot is empty, filled, or locked
-
-- **Persistent storage**  
-  Stored clips survive app restarts and profile switches
-
-- **Manual clear option**  
-  Clear a slot instantly using a button in the settings panel
-
-## Screenshots
-
-
-### Button States
-
-| Empty | Filled | Locked (Filled) | Locked (Empty) |
-|:-------:|:--------:|:----------------:|:-----------------:|
-| ![Empty state](docs/images/empty.png) | ![Filled state](docs/images/filled.png) | ![Locked state](docs/images/locked.png) | ![Empty locked state](docs/images/empty-locked.png) |
-| Ready to be assigned from clipboard | Displaying captured text | Protected with stored content | Protected, ready to be assigned from clipboard |
-
-### Settings Panel
-![Settings panel](docs/images/settings-panel.png)
-
-*Settings panel with Prevent Clear checkbox and Clear Stored Content button*
-
-### Hold-to-Clear
-![Hold to clear feedback](docs/images/release-clear.png)
-
-*Visual feedback when holding button to clear*
+A Stream Deck plugin suite with two actions — **Quick Clips** for capturing and pasting clipboard content on demand, and **Quick Text Utils** for transforming text without leaving your workflow.
 
 ## Installation
 
@@ -62,106 +11,102 @@ This is especially useful for text that changes often, such as code snippets, AP
 3. Search for "Quick Clips"
 4. Click Install
 
-### Manual Installation (Development)
+### Direct Download
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/glmorgan/quick-clips.git
-   cd quick-clips
-   ```
+1. Download `com.quickclips.streamdeck.streamDeckPlugin` from the [latest release](https://github.com/glmorgan/quick-clips/releases/latest)
+2. Double-click to install
 
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+---
 
-3. Build the plugin:
-   ```bash
-   npm run build
-   ```
+## Quick Clips
 
-4. Link the plugin to Stream Deck:
-   ```bash
-   ln -s "$(pwd)/com.quickclips.streamdeck.sdPlugin" \
-     "$HOME/Library/Application Support/com.elgato.StreamDeck/Plugins/"
-   ```
+Turn Stream Deck buttons into flexible clipboard slots. Capture text once, paste it on demand, clear it when you're done — all without touching the Stream Deck UI.
 
-5. Restart Stream Deck (choose one):
-   
-   **Option 1:** Using CLI (requires `npm install -g @elgato/streamdeck-cli`)
-   ```bash
-   streamdeck restart com.quickclips.streamdeck
-   ```
-   
-   **Option 2:** Manually quit and reopen the Stream Deck application
+### How It Works
 
-## How It Works
+1. Press an empty button to capture whatever text is on your clipboard
+2. Press the same button again to paste it into the active application
+3. Hold for one second to clear the slot when you're done
 
-### Basic Usage
+### Features
 
-1. Add a Quick Clips button to your Stream Deck from the Actions panel
-2. Click an empty button to capture the current clipboard contents
-3. Click a filled button to paste the stored text into the active application
-4. Press and hold for one second to clear the slot. You will see a "Release to Clear" message while holding
+- **One-click capture and paste** — click empty to capture, click filled to paste
+- **Simulate typing** — outputs text as keystrokes by default, leaving your clipboard untouched
+- **Hold to clear** — press and hold one second to clear a slot
+- **Prevent Clear mode** — lock a slot to protect it from accidental clearing
+- **Persistent storage** — stored clips survive app restarts and profile switches
 
-### Advanced Features
+### Button States
 
-#### Prevent Clear (Lock Mode)
-
-Enable this option in the button’s settings to:
-
-- Disable the hold to clear behavior
-- Show a lock icon to indicate the slot is protected
-- Prevent accidental clearing of important clips
-
-You can still clear the slot manually using the **Clear Stored Content** button in the settings.
-
-#### Visual States
-
-Each button updates its icon based on its current state:
-
-| State | Icon | Description |
-|------|------|-------------|
-| Empty, unlocked | Gray clipboard | Ready to be assigned from clipboard |
-| Empty, locked | Locked clipboard | Protected and ready to be assigned from clipboard |
-| Filled, unlocked | Blue clipboard | Ready to paste; can be cleared |
-| Filled, locked | Lock icon | Ready to paste; protected from being overwritten |
+| Empty | Filled | Locked (Filled) | Locked (Empty) |
+|:-------:|:--------:|:----------------:|:-----------------:|
+| ![Empty state](docs/images/empty.png) | ![Filled state](docs/images/filled.png) | ![Locked state](docs/images/locked.png) | ![Empty locked state](docs/images/empty-locked.png) |
+| Ready to capture | Stored, ready to paste | Protected, ready to paste | Protected, ready to capture |
 
 ### Button Settings
 
-Click on the button from Settings to:
+- **Paste Mode** — Simulate Typing (default) or Clipboard Paste
+- **Prevent Clear** — disable hold-to-clear to protect a slot
+- **Clear Stored Content** — manually reset the slot
 
-- **Prevent Clear** checkbox to enable or disable hold to clear
-- **Clear Stored Content** button to manually reset the slot
+---
+
+## Quick Text Utils
+
+Transform clipboard text without breaking your workflow. Copy text, press a configured button, and the transformed result is output directly — no apps to open, no menus to navigate.
+
+Each button is dedicated to a single transform. Hold for one second to reconfigure it at any time.
+
+### Transforms
+
+**Case**
+- To Upper, To Lower, To Title, To Camel, To Snake, To Dash
+
+**Encode / Decode**
+- B64 Encode, B64 Decode, URL Encode, URL Decode
+
+**Utility**
+- Trim — removes leading and trailing whitespace
+- Count — displays word, character, and line counts
+
+### How It Works
+
+1. Copy text to your clipboard
+2. Press a configured Quick Text Utils button
+3. Transformed text is output (simulate typing by default)
+
+To configure a button: hold for one second until the orange icon appears, release, then pick a transform from the list.
+
+### Button Settings
+
+- **Paste Mode** — Simulate Typing (default) or Clipboard Paste
+- **Transform** — select a transform from the dropdown
+
+---
 
 ## Platform Support
 
-- **macOS**: Supported and tested on macOS 10.15 and later
-- **Windows**: Planned for a future release
-- **Linux**: Planned for a future release
+- **macOS** — Supported (macOS 12+)
+- **Windows** — Planned for a future release
 
 ## Development
 
-### Build
 ```bash
-npm run build
+npm install          # Install dependencies
+npm run build        # Build plugin
+npm run watch        # Build + watch, auto-restarts plugin on save
+npm test             # Run tests
+npx streamdeck dev   # Enable developer mode (required once per machine)
 ```
 
-### Watch Mode
-```bash
-npm run watch
-```
-
-### Restart Plugin
-```bash
-streamdeck restart com.quickclips.streamdeck
-```
+Logs: `com.quickclips.streamdeck.sdPlugin/logs/com.quickclips.streamdeck.0.log`
 
 ## Technical Details
 
 - Built with TypeScript using the Elgato Stream Deck SDK v2.0
-- Uses native macOS clipboard tools (pbpaste and pbcopy)
-- Settings are stored persistently within Stream Deck profiles
+- Uses native macOS clipboard tools (`pbpaste`, `pbcopy`, `osascript`)
+- Text output via simulated keystrokes by default — clipboard is not overwritten on paste
+- Settings stored persistently within Stream Deck profiles
 - No external services or network access required
 
 ## License
@@ -174,5 +119,4 @@ Glen Morgan
 
 ## Support
 
-For bugs, feature requests, or questions, please visit the GitHub issues page:
-https://github.com/glmorgan/quick-clips/issues
+For bugs, feature requests, or questions: https://github.com/glmorgan/quick-clips/issues
