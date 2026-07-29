@@ -1,4 +1,37 @@
-export type TransformType = 'upper' | 'lower' | 'titlecase' | 'camelCase' | 'dashcase' | 'snakecase' | 'trim' | 'urlencode' | 'urldecode' | 'base64encode' | 'base64decode' | 'count';
+import { randomUUID } from 'node:crypto';
+
+export type TransformType = 'upper' | 'lower' | 'titlecase' | 'camelCase' | 'dashcase' | 'snakecase' | 'trim' | 'urlencode' | 'urldecode' | 'base64encode' | 'base64decode' | 'count' | 'uuid' | 'dateiso' | 'datetimeiso' | 'unixtime' | 'unixtimems';
+
+/**
+ * Transforms that produce their own output and ignore the incoming text. Callers must not
+ * treat an empty clipboard as an error for these.
+ */
+const GENERATORS: ReadonlySet<TransformType> = new Set<TransformType>([
+    'uuid', 'dateiso', 'datetimeiso', 'unixtime', 'unixtimems',
+]);
+
+export function isGenerator(transform: TransformType): boolean {
+    return GENERATORS.has(transform);
+}
+
+function pad2(n: number): string {
+    return String(n).padStart(2, '0');
+}
+
+/**
+ * Formats the *local* calendar date as `YYYY-MM-DD`.
+ *
+ * Deliberately not `toISOString().slice(0, 10)`, which formats in UTC and therefore reports
+ * the wrong day for anyone whose local date differs from UTC's at the time of use.
+ */
+function localDate(d: Date): string {
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** Formats the local wall-clock time as `HH:mm:ss`. */
+function localTime(d: Date): string {
+    return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
 
 export function applyTransform(text: string, transform: TransformType): string {
     switch (transform) {
@@ -28,7 +61,42 @@ export function applyTransform(text: string, transform: TransformType): string {
             return decodeURIComponent(text.trim());
         case 'count':
             return text;
+        case 'uuid':
+            // Generator, not a transform — ignores the incoming text
+            return randomUUID();
+        case 'dateiso':
+            return localDate(new Date());
+        case 'datetimeiso': {
+            // One Date instance so the date and time cannot straddle a midnight rollover
+            const now = new Date();
+            return `${localDate(now)}T${localTime(now)}`;
+        }
+        case 'unixtime':
+            // POSIX time: whole seconds since the epoch, as `date +%s` and JWT claims use
+            return String(Math.floor(Date.now() / 1000));
+        case 'unixtimems':
+            // Milliseconds, matching JavaScript's Date.now() and most JSON APIs
+            return String(Date.now());
     }
+}
+
+/**
+ * Escapes text for embedding in an AppleScript double-quoted string literal.
+ *
+ * AppleScript treats `\` as an escape character inside strings, so unescaped input
+ * containing backslashes (Windows paths, regexes, escaped JSON, LaTeX) is either
+ * mangled or fails to compile. Newlines are converted to escape sequences so the
+ * generated script always stays on a single line — a raw CR would otherwise
+ * terminate the statement.
+ *
+ * Order matters: backslashes must be doubled before any other escape is introduced.
+ */
+export function escapeForAppleScript(text: string): string {
+    return text
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/\r/g, '\\r')
+        .replace(/\n/g, '\\n');
 }
 
 export function generateLabel(text: string): string {

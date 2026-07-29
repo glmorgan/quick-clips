@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"const m=require\\('./com.quickclips.streamdeck.sdPlugin/manifest.json'\\); console.log\\(Object.keys\\(m\\).join\\(', '\\)\\); console.log\\('actions:', m.Actions.map\\(a=>a.UUID\\).join\\(', '\\)\\)\")",
+      "Bash(W=860 H=670 THEME=dark SEL=unixtime WRAP=/private/tmp/claude-501/-Users-glen-Documents-GitHub-quick-clips/e091b07c-ae4e-49fd-be24-c288e8d0a800/scratchpad/shot3.sh SHOT_PATH=/private/tmp/claude-501/-Users-glen-Documents-GitHub-quick-clips/e091b07c-ae4e-49fd-be24-c288e8d0a800/scratchpad/nowicons.png npx tsx /private/tmp/claude-501/-Users-glen-Documents-GitHub-quick-clips/e091b07c-ae4e-49fd-be24-c288e8d0a800/scratchpad/harness5.mts)",
+      "Bash(magick /private/tmp/claude-501/-Users-glen-Documents-GitHub-quick-clips/e091b07c-ae4e-49fd-be24-c288e8d0a800/scratchpad/nowicons.png -crop 860x140+0+445 /private/tmp/claude-501/-Users-glen-Documents-GitHub-quick-clips/e091b07c-ae4e-49fd-be24-c288e8d0a800/scratchpad/nowicons_crop.png)"
+    ]
+  }
+}
