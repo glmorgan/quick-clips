@@ -118,7 +118,19 @@ export async function findHosts(): Promise<string[]> {
         await access(NATIVE_HOST, constants.X_OK);
         hosts.push(NATIVE_HOST);
     } catch {
-        // native host not built for this checkout — browsers only
+        // `streamdeck pack` stores no permission bits at all, so a host installed from a packaged
+        // plugin arrives without its exec bit and cannot be spawned. plugin.js is unaffected
+        // because Stream Deck runs it as an argument to node. Restore the bit rather than
+        // silently falling back to a browser for every packaged install.
+        try {
+            await access(NATIVE_HOST, constants.F_OK);
+            const { chmod } = await import("node:fs/promises");
+            await chmod(NATIVE_HOST, 0o755);
+            await access(NATIVE_HOST, constants.X_OK);
+            hosts.push(NATIVE_HOST);
+        } catch {
+            // not built for this checkout, or the location is not writable — browsers only
+        }
     }
     for (const path of BROWSER_CANDIDATES) {
         try {
