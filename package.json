@@ -1,6 +1,7 @@
 {
     "scripts": {
         "build": "rollup -c",
+        "build:native": "bash native/build.sh",
         "watch": "rollup -c -w --watch.onEnd=\"streamdeck restart com.quickclips.streamdeck\"",
         "test": "vitest run",
         "test:watch": "vitest"

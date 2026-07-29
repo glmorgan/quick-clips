@@ -6,7 +6,7 @@ import { writeFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { applyTransform, escapeForAppleScript, isGenerator } from "../utils.js";
-import { findBrowser, showPicker, type PickerItem } from "../picker.js";
+import { findHosts, showPicker, type PickerItem } from "../picker.js";
 
 const execAsync = promisify(exec);
 
@@ -171,15 +171,17 @@ export class ClipboardUtils extends SingletonAction<UtilSettings> {
     private holdTrackers = new Map<string, { timer: NodeJS.Timeout | null; configMode: boolean }>();
 
     /**
-     * Shows the transform picker, preferring the rich browser window and falling back to
-     * the osascript list when no Chromium-family browser is installed or the window fails
-     * to open. The fallback keeps the action fully functional on a bare machine.
+     * Shows the transform picker, trying each available window host in turn (native, then any
+     * Chromium-family browser) and falling back to the osascript list if none can display.
+     * The fallback keeps the action fully functional on a bare machine.
      */
     private async promptTransform(current?: TransformType): Promise<TransformType | null> {
-        const browser = await findBrowser();
-        if (browser) {
+        // Work down the available hosts. A host can exist yet fail to launch — an unsigned native
+        // host that Gatekeeper quarantined is the usual cause — so a failure here must try the
+        // next one rather than be mistaken for the user cancelling.
+        for (const host of await findHosts()) {
             try {
-                const chosen = await showPicker(buildPickerItems(), browser, {
+                const chosen = await showPicker(buildPickerItems(), host, {
                     title: 'Quick Text Utils',
                     subtitle: 'Pick what this button should do',
                     selectedId: current,
@@ -187,9 +189,10 @@ export class ClipboardUtils extends SingletonAction<UtilSettings> {
                 });
                 return chosen as TransformType | null;
             } catch (error) {
-                streamDeck.logger.error("Browser picker failed, falling back to osascript:", error);
+                streamDeck.logger.warn(`Picker host unavailable, trying the next one:`, error);
             }
         }
+        streamDeck.logger.info("No window host available; using the osascript picker");
         return this.promptTransformViaOsascript();
     }
 

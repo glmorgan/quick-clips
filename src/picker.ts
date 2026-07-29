@@ -16,7 +16,7 @@ import { AddressInfo } from "node:net";
  * label-to-id reverse mapping the AppleScript picker forced on us.
  *
  * Callers must handle a `null` result (cancelled or timed out) and should fall back to
- * the osascript picker when {@link findBrowser} returns `null`.
+ * the osascript picker when {@link findHosts} returns an empty list.
  */
 
 export type PickerItem = {
@@ -43,9 +43,12 @@ export type PickerOptions = {
     /** Abandon the picker and resolve `null` after this many ms. */
     timeoutMs?: number;
     /**
-     * Called when the picker cannot serve an asset. Without this an unreadable icon renders as
-     * blank space with nothing in the log, which is very hard to diagnose. Kept as a callback
-     * so this module stays free of any Stream Deck SDK coupling.
+     * Diagnostic channel: unservable assets, and anything the window host writes to stderr
+     * (the native host reports its resolved geometry and any page-load failure there).
+     *
+     * Without it these failures are invisible — an unreadable icon just renders as blank space —
+     * which is the hardest class of problem to diagnose from the outside. Kept as a callback so
+     * this module stays free of any Stream Deck SDK coupling.
      */
     onWarn?: (message: string) => void;
     /**
@@ -84,20 +87,48 @@ const VERTICAL_BIAS = 0.35;
 const ICON_SUFFIXES = ["@2x.png", ".png"] as const;
 
 /**
- * Returns the path to an installed Chromium-family browser, or `null` if none is present.
- * A `null` result is expected and means the caller should use the osascript fallback.
+ * Bundled native window host, relative to the sdPlugin root. Built by `npm run build:native`
+ * and absent from a plain `npm run build`, hence the browser fallback.
  */
-export async function findBrowser(): Promise<string | null> {
+const NATIVE_HOST = "bin/picker-host";
+
+/**
+ * Thrown when a host could not be launched at all, as distinct from the user cancelling.
+ * Callers should try the next host rather than treating it as "no selection".
+ */
+export class PickerHostLaunchError extends Error {}
+
+/**
+ * Returns every command capable of displaying the picker, best first.
+ *
+ * The native host comes first: it needs no browser installed, creates the window already sized
+ * and positioned (so there is no visible resize), and does not borrow the user's browser
+ * profile. Chromium-family browsers follow.
+ *
+ * Returns them all rather than just the best, because a host can be present yet unlaunchable —
+ * an unsigned native host on a machine where Gatekeeper quarantined it is the common case. The
+ * caller works down the list, then falls back to osascript if every one fails.
+ */
+export async function findHosts(): Promise<string[]> {
     const { access } = await import("node:fs/promises");
+    const { constants } = await import("node:fs");
+    const hosts: string[] = [];
+    try {
+        // Must be executable, not merely present — an unbuilt or non-executable file is useless.
+        await access(NATIVE_HOST, constants.X_OK);
+        hosts.push(NATIVE_HOST);
+    } catch {
+        // native host not built for this checkout — browsers only
+    }
     for (const path of BROWSER_CANDIDATES) {
         try {
             await access(path);
-            return path;
+            hosts.push(path);
         } catch {
             // not installed — try the next candidate
         }
     }
-    return null;
+    return hosts;
 }
 
 /** Escapes text for safe interpolation into an HTML text node or attribute. */
@@ -188,6 +219,13 @@ function renderHtml(
     if (revealed) return;
     revealed = true;
     root.classList.add('ready');
+  }
+  // The native host creates the window at the right size and place before the page loads, so
+  // there is nothing to correct. Calling resizeTo() there would actively hurt: it sizes the
+  // outer frame and would cost 32px of content height.
+  if (window.__nativeHost) {
+    reveal();
+    return;
   }
   try {
     // resizeTo sizes the *outer* window, which includes the title bar, so asking for H
@@ -523,7 +561,7 @@ function renderHtml(
  * Displays the picker and resolves with the chosen item id, or `null` if the user
  * cancelled, closed the window, or the timeout elapsed.
  *
- * @param browserPath Executable from {@link findBrowser}. Spawned directly rather than
+ * @param browserPath Executable from {@link findHosts}. Spawned directly rather than
  * via `open`, because `open -a` drops `--args` when the browser is already running,
  * which would surface the picker as an ordinary tab instead of an app window.
  */
@@ -539,7 +577,7 @@ export async function showPicker(
     const allowedIcons = new Set(items.map(i => i.icon));
     const warn = options.onWarn ?? (() => { /* caller opted out of diagnostics */ });
 
-    return new Promise<string | null>((resolve) => {
+    return new Promise<string | null>((resolve, reject) => {
         let settled = false;
         let child: ChildProcess | undefined;
         let timer: NodeJS.Timeout | undefined;
@@ -554,6 +592,16 @@ export async function showPicker(
             // The app window owns no other tabs, so terminating it is safe.
             child?.kill();
             resolve(result);
+        }
+
+        /** A host that never displayed anything — the caller should try the next one. */
+        function failLaunch(detail: string): void {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            server.close();
+            child?.kill();
+            reject(new PickerHostLaunchError(`${browserPath} failed to launch: ${detail}`));
         }
 
         function handle(req: IncomingMessage, res: ServerResponse): void {
@@ -629,9 +677,35 @@ export async function showPicker(
                 `--window-size=${WINDOW_WIDTH},${WINDOW_HEIGHT}`,
                 "--no-first-run",
                 "--no-default-browser-check",
-            ], { stdio: "ignore", detached: false });
+            ], { stdio: ["ignore", "ignore", "pipe"], detached: false });
 
-            child.on("error", () => finish(null));
+            // Surface the host's stderr. The native host reports its window geometry and any
+            // page-load failure there; discarding it would hide exactly the class of problem
+            // that is hardest to diagnose from the outside.
+            child.stderr?.on("data", chunk => {
+                const text = String(chunk).trim();
+                if (text) warn(text);
+            });
+
+            child.on("error", err => failLaunch(err.message));
+
+            // The host exited before any selection arrived. Exit status separates the two very
+            // different reasons:
+            //
+            //  - code 0: it ran and the window was closed. The page's beforeunload POST normally
+            //    reports that first, but it can lose the race, so treat this as a cancellation.
+            //    Retrying another host here would pop a second window at the user.
+            //  - anything else: it never displayed — a quarantined binary killed by the system,
+            //    or bad arguments. Worth trying the next host.
+            child.on("exit", (code, signal) => {
+                if (settled) return;
+                if (code === 0 && !signal) {
+                    finish(null);
+                } else {
+                    failLaunch(signal ? `killed by ${signal}` : `exited with code ${code}`);
+                }
+            });
+
             timer = setTimeout(() => finish(null), timeoutMs);
         });
     });
