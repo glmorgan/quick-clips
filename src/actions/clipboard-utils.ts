@@ -5,7 +5,8 @@ import { promisify } from "util";
 import { writeFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
-import { applyTransform } from "../utils.js";
+import { applyTransform, escapeForAppleScript, isGenerator } from "../utils.js";
+import { findBrowser, showPicker, type PickerItem } from "../picker.js";
 
 const execAsync = promisify(exec);
 
@@ -27,6 +28,11 @@ const TRANSFORM_LABELS: Record<TransformType, string> = {
     base64encode: 'B64 Enc',
     base64decode: 'B64 Dec',
     count: 'Count',
+    uuid: 'UUID',
+    dateiso: 'Date',
+    datetimeiso: 'Date Time',
+    unixtime: 'Unix (s)',
+    unixtimems: 'Unix (ms)',
 };
 
 const TRANSFORM_ICONS: Record<TransformType, string> = {
@@ -42,12 +48,18 @@ const TRANSFORM_ICONS: Record<TransformType, string> = {
     base64encode: 'imgs/actions/utils/base64encode',
     base64decode: 'imgs/actions/utils/base64decode',
     count: 'imgs/actions/utils/count',
+    uuid: 'imgs/actions/utils/uuid',
+    dateiso: 'imgs/actions/utils/dateiso',
+    datetimeiso: 'imgs/actions/utils/datetimeiso',
+    unixtime: 'imgs/actions/utils/unixtime',
+    unixtimems: 'imgs/actions/utils/unixtimems',
 };
 
 const TRANSFORM_GROUPS = [
     { header: '— Case —',           items: ['To Upper', 'To Lower', 'To Title', 'To Camel', 'To Snake', 'To Dash'] },
     { header: '— Encode / Decode —', items: ['B64 Encode', 'B64 Decode', 'URL Encode', 'URL Decode'] },
     { header: '— Utility —',         items: ['Trim', 'Count'] },
+    { header: '— Generate —',        items: ['Date', 'Date & Time', 'Unix Time (s)', 'Unix Time (ms)', 'UUID'] },
 ];
 
 const TRANSFORM_LIST = TRANSFORM_GROUPS.flatMap(g => [g.header, ...g.items.map(i => `  ${i}`)]);
@@ -65,7 +77,88 @@ const LABEL_TO_TRANSFORM: Record<string, TransformType> = {
     'B64 Encode': 'base64encode',
     'B64 Decode': 'base64decode',
     'Count': 'count',
+    'UUID': 'uuid',
+    'Date': 'dateiso',
+    'Date & Time': 'datetimeiso',
+    'Unix Time (s)': 'unixtime',
+    'Unix Time (ms)': 'unixtimems',
 };
+
+/**
+ * Grouping for the rich browser picker. Unlike {@link TRANSFORM_GROUPS} (which flattens
+ * headers into selectable rows because `choose from list` has no section concept), this
+ * references transforms by id, so no display-string round-trip is involved.
+ */
+const PICKER_GROUPS: { group: string; items: TransformType[] }[] = [
+    { group: 'Case', items: ['upper', 'lower', 'titlecase', 'camelCase', 'snakecase', 'dashcase'] },
+    { group: 'Encode / Decode', items: ['base64encode', 'base64decode', 'urlencode', 'urldecode'] },
+    { group: 'Utility', items: ['trim', 'count'] },
+    { group: 'Generate', items: ['dateiso', 'datetimeiso', 'unixtime', 'unixtimems', 'uuid'] },
+];
+
+/**
+ * Full names for the picker, which has room for more than the button title does.
+ *
+ * The case transforms are written *in* the case they produce, so the label doubles as a
+ * worked example — `to_snake_case` shows the output shape faster than any description.
+ * The remaining transforms can't self-demonstrate legibly, so they stay plain.
+ */
+const TRANSFORM_FULL_NAMES: Record<TransformType, string> = {
+    upper: 'TO UPPER',
+    lower: 'to lower',
+    titlecase: 'To Title Case',
+    camelCase: 'toCamelCase',
+    dashcase: 'to-dash-case',
+    snakecase: 'to_snake_case',
+    trim: 'Trim Whitespace',
+    urlencode: 'URL Encode',
+    urldecode: 'URL Decode',
+    base64encode: 'Base64 Encode',
+    base64decode: 'Base64 Decode',
+    count: 'Word Count',
+    uuid: 'UUID',
+    dateiso: 'Date',
+    datetimeiso: 'Date & Time',
+    unixtime: 'Unix Time (s)',
+    unixtimems: 'Unix Time (ms)',
+};
+
+/**
+ * Tint used for each transform's icon tile in the picker. These mirror the accent bar
+ * baked into the corresponding PNG — update both together if the icons are redrawn.
+ */
+const TRANSFORM_ACCENTS: Record<TransformType, string> = {
+    upper: '#ffd966',
+    lower: '#ffd966',
+    titlecase: '#ffd966',
+    camelCase: '#ffd966',
+    dashcase: '#ffd966',
+    snakecase: '#ffd966',
+    base64encode: '#93c47d',
+    base64decode: '#93c47d',
+    urlencode: '#ad7dc4',
+    urldecode: '#ad7dc4',
+    trim: '#cc0000',
+    count: '#e69138',
+    // Generators share one accent, the same way the case and encoding families do
+    uuid: '#6d9eeb',
+    dateiso: '#6d9eeb',
+    datetimeiso: '#6d9eeb',
+    unixtime: '#6d9eeb',
+    unixtimems: '#6d9eeb',
+};
+
+function buildPickerItems(): PickerItem[] {
+    return PICKER_GROUPS.flatMap(({ group, items }) =>
+        items.map(id => ({
+            id,
+            group,
+            label: TRANSFORM_FULL_NAMES[id],
+            icon: TRANSFORM_ICONS[id],
+            accent: TRANSFORM_ACCENTS[id],
+        }))
+    );
+}
 
 type UtilSettings = {
     transform?: TransformType;
@@ -77,7 +170,30 @@ export class ClipboardUtils extends SingletonAction<UtilSettings> {
 
     private holdTrackers = new Map<string, { timer: NodeJS.Timeout | null; configMode: boolean }>();
 
-    private async promptTransform(): Promise<TransformType | null> {
+    /**
+     * Shows the transform picker, preferring the rich browser window and falling back to
+     * the osascript list when no Chromium-family browser is installed or the window fails
+     * to open. The fallback keeps the action fully functional on a bare machine.
+     */
+    private async promptTransform(current?: TransformType): Promise<TransformType | null> {
+        const browser = await findBrowser();
+        if (browser) {
+            try {
+                const chosen = await showPicker(buildPickerItems(), browser, {
+                    title: 'Quick Text Utils',
+                    subtitle: 'Pick what this button should do',
+                    selectedId: current,
+                    onWarn: message => streamDeck.logger.warn(message),
+                });
+                return chosen as TransformType | null;
+            } catch (error) {
+                streamDeck.logger.error("Browser picker failed, falling back to osascript:", error);
+            }
+        }
+        return this.promptTransformViaOsascript();
+    }
+
+    private async promptTransformViaOsascript(): Promise<TransformType | null> {
         const listStr = TRANSFORM_LIST.map(t => `"${t}"`).join(', ');
         const script = `set choices to {${listStr}}
 set chosen to choose from list choices with prompt "Choose transform:" without multiple selections allowed
@@ -136,9 +252,7 @@ return item 1 of chosen`;
 
     private async simulateTyping(text: string): Promise<void> {
         return new Promise((resolve, reject) => {
-            const parts = text.split('"').map(p => `"${p}"`);
-            const asString = parts.join(' & quote & ');
-            const script = `tell application "System Events" to keystroke ${asString}`;
+            const script = `tell application "System Events" to keystroke "${escapeForAppleScript(text)}"`;
             const proc = spawn('osascript', ['-']);
             proc.stdin.write(script);
             proc.stdin.end();
@@ -203,8 +317,9 @@ return item 1 of chosen`;
         this.holdTrackers.delete(ev.action.id);
 
         if (tracker?.configMode) {
-            // Hold — show picker to reconfigure transform
-            const chosen = await this.promptTransform();
+            // Hold — show picker to reconfigure transform. The picker is pure configuration,
+            // so it never touches the clipboard.
+            const chosen = await this.promptTransform(settings.transform);
             if (chosen) {
                 const newSettings: UtilSettings = { ...settings, transform: chosen };
                 await ev.action.setSettings(newSettings);
@@ -222,8 +337,10 @@ return item 1 of chosen`;
             return;
         }
 
-        const text = await this.readClipboard();
-        if (!text) {
+        // Generators produce their own value, so an empty clipboard is not an error for them
+        const needsClipboard = !isGenerator(settings.transform);
+        const text = needsClipboard ? await this.readClipboard() : '';
+        if (needsClipboard && !text) {
             await ev.action.showAlert();
             return;
         }
@@ -235,11 +352,17 @@ return item 1 of chosen`;
         }
 
         const transformed = applyTransform(text, settings.transform);
-        if ((settings.pasteMode ?? 'typing') === 'typing') {
-            await this.simulateTyping(transformed);
-        } else {
-            await this.writeClipboard(transformed);
-            await this.simulatePaste();
+        try {
+            if ((settings.pasteMode ?? 'typing') === 'typing') {
+                await this.simulateTyping(transformed);
+            } else {
+                await this.writeClipboard(transformed);
+                await this.simulatePaste();
+            }
+        } catch (error) {
+            streamDeck.logger.error("Failed to output text:", error);
+            await ev.action.showAlert();
+            return;
         }
         await ev.action.showOk();
     }

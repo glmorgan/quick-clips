@@ -1,5 +1,5 @@
 import { action, KeyDownEvent, KeyUpEvent, SingletonAction, WillAppearEvent, WillDisappearEvent, DidReceiveSettingsEvent, SendToPluginEvent, streamDeck } from "@elgato/streamdeck";
-import { generateLabel } from "../utils.js";
+import { escapeForAppleScript, generateLabel } from "../utils.js";
 import { spawn } from "child_process";
 import { exec } from "child_process";
 import { promisify } from "util";
@@ -115,11 +115,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
 
     private async simulateTyping(text: string): Promise<void> {
         return new Promise((resolve, reject) => {
-            // Split on double quotes and rejoin with AppleScript quote variable to handle
-            // arbitrary text without breaking the AppleScript string literal
-            const parts = text.split('"').map(p => `"${p}"`);
-            const asString = parts.join(' & quote & ');
-            const script = `tell application "System Events" to keystroke ${asString}`;
+            const script = `tell application "System Events" to keystroke "${escapeForAppleScript(text)}"`;
             const proc = spawn('osascript', ['-']);
             proc.stdin.write(script);
             proc.stdin.end();
@@ -394,11 +390,17 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
      */
     private async handleClick(ev: KeyUpEvent<SlotSettings>, settings: SlotSettings): Promise<void> {
         if (settings.value) {
-            if ((settings.pasteMode ?? 'typing') === 'typing') {
-                await this.simulateTyping(settings.value);
-            } else {
-                await this.writeClipboard(settings.value);
-                await this.simulatePaste();
+            try {
+                if ((settings.pasteMode ?? 'typing') === 'typing') {
+                    await this.simulateTyping(settings.value);
+                } else {
+                    await this.writeClipboard(settings.value);
+                    await this.simulatePaste();
+                }
+            } catch (error) {
+                streamDeck.logger.error("Failed to output stored text:", error);
+                await ev.action.showAlert();
+                return;
             }
             await ev.action.showOk();
         } else {
