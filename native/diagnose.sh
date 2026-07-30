@@ -87,13 +87,19 @@ say "does it open a window? (2 second test)"
 if [ -x "$HOST" ]; then
   DIR=$(mktemp -d)
   printf '<!doctype html><title>t</title><body style="background:#2d7">DIAGNOSTIC WINDOW</body>' > "$DIR/index.html"
-  ( cd "$DIR" && python3 -m http.server 8931 >/dev/null 2>&1 & echo $! > "$DIR/pid" )
+  # --bind 127.0.0.1 keeps this off the network; http.server listens on every interface by
+  # default. --directory avoids a subshell, so $! is the server itself and the kill below
+  # actually reaches it rather than an intermediate shell.
+  python3 -m http.server 8931 --bind 127.0.0.1 --directory "$DIR" >/dev/null 2>&1 &
+  srv=$!
+  # Make sure the listener dies even if this script is interrupted.
+  trap 'kill "$srv" 2>/dev/null; [ -n "$hpid" ] && kill "$hpid" 2>/dev/null; rm -rf "$DIR"' EXIT INT TERM
   sleep 1
   "$HOST" --app=http://127.0.0.1:8931/ --window-size=520,300 2>"$DIR/err" &
   hpid=$!
   sleep 2
   kill "$hpid" 2>/dev/null
-  kill "$(cat "$DIR/pid")" 2>/dev/null
+  kill "$srv" 2>/dev/null
   printf '  host stderr: %s\n' "$(cat "$DIR/err" 2>/dev/null || echo '(none)')"
   printf '  A small green window should have appeared for ~2s.\n'
   printf '  If it did NOT, the native window itself is the problem.\n'
