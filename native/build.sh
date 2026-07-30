@@ -37,6 +37,17 @@ done
 lipo -create -output "$OUT" "$TMP/picker-host-arm64" "$TMP/picker-host-x86_64"
 chmod +x "$OUT"
 
+# swiftc ad-hoc signs the arm64 output (arm64 macOS requires a signature) but not the
+# cross-compiled x86_64 one, and lipo does not re-sign what it produces — leaving a binary that
+# claims "Signature=adhoc" yet fails `codesign --verify` with "not signed at all". Both slices
+# still execute, but an invalid signature would block notarization and is worth not shipping.
+codesign --force --sign - --timestamp=none "$OUT" 2>/dev/null
+
 echo "built $OUT"
 lipo -archs "$OUT" | sed 's/^/  architectures: /'
 echo "  size: $(stat -f '%z' "$OUT") bytes"
+if codesign --verify "$OUT" 2>/dev/null; then
+  echo "  signature: ad-hoc, verifies"
+else
+  echo "  signature: INVALID — investigate before distributing"
+fi

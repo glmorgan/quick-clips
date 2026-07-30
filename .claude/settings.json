@@ -3,7 +3,21 @@
     "allow": [
       "Bash(node -e \"const m=require\\('./com.quickclips.streamdeck.sdPlugin/manifest.json'\\); console.log\\(Object.keys\\(m\\).join\\(', '\\)\\); console.log\\('actions:', m.Actions.map\\(a=>a.UUID\\).join\\(', '\\)\\)\")",
       "Bash(W=860 H=670 THEME=dark SEL=unixtime WRAP=/private/tmp/claude-501/-Users-glen-Documents-GitHub-quick-clips/e091b07c-ae4e-49fd-be24-c288e8d0a800/scratchpad/shot3.sh SHOT_PATH=/private/tmp/claude-501/-Users-glen-Documents-GitHub-quick-clips/e091b07c-ae4e-49fd-be24-c288e8d0a800/scratchpad/nowicons.png npx tsx /private/tmp/claude-501/-Users-glen-Documents-GitHub-quick-clips/e091b07c-ae4e-49fd-be24-c288e8d0a800/scratchpad/harness5.mts)",
-      "Bash(magick /private/tmp/claude-501/-Users-glen-Documents-GitHub-quick-clips/e091b07c-ae4e-49fd-be24-c288e8d0a800/scratchpad/nowicons.png -crop 860x140+0+445 /private/tmp/claude-501/-Users-glen-Documents-GitHub-quick-clips/e091b07c-ae4e-49fd-be24-c288e8d0a800/scratchpad/nowicons_crop.png)"
+      "Bash(magick /private/tmp/claude-501/-Users-glen-Documents-GitHub-quick-clips/e091b07c-ae4e-49fd-be24-c288e8d0a800/scratchpad/nowicons.png -crop 860x140+0+445 /private/tmp/claude-501/-Users-glen-Documents-GitHub-quick-clips/e091b07c-ae4e-49fd-be24-c288e8d0a800/scratchpad/nowicons_crop.png)",
+      "Bash(gh release *)",
+      "Bash(python3 -)",
+      "Bash(git tag *)",
+      "Bash(git rev-list *)",
+      "Bash(git ls-remote *)",
+      "Bash(xargs -I{} echo \"v0.2.0 on remote: {} \\(0 = not pushed yet\\)\")",
+      "Bash(xargs -I{} echo \"behind/ahead vs origin: {}\")",
+      "Bash(awk '{print \"remote tag: \"$2}')",
+      "Bash(xcrun --find swiftc)",
+      "Bash(swift --version)",
+      "Bash(xcode-select -p)",
+      "Bash(security find-identity *)",
+      "Bash(xcrun --find notarytool)",
+      "Bash(npm run *)"
     ]
   }
 }

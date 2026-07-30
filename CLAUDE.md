@@ -11,6 +11,9 @@ npm run watch        # Build + watch; auto-restarts plugin on save via `streamde
 npm test             # Run tests (vitest)
 npm run test:watch   # Run tests in watch mode
 npx streamdeck dev   # Enable developer mode (required once per machine for streamdeck restart and plugin logging)
+npm run build:native # Build the native picker window host (Swift; needs Command Line Tools)
+npm run release      # test → build → build:native → pack → verify. Use this to cut a release.
+npm run verify       # Validate an already-packed .streamDeckPlugin
 npx streamdeck pack com.quickclips.streamdeck.sdPlugin --force  # Create distributable .streamDeckPlugin file
 tail -f com.quickclips.streamdeck.sdPlugin/logs/com.quickclips.streamdeck.0.log  # Plugin logs
 ```
@@ -64,6 +67,12 @@ This is an Elgato Stream Deck plugin built with the `@elgato/streamdeck` SDK v2.
 **Property inspector:**
 - `ui/clipboard-slot.html` — Paste Mode select, Prevent Clear checkbox, Clear Content button. Uses `SDPIComponents.streamDeckClient.send('sendToPlugin', ...)` directly (no sdpi-delegate).
 - `ui/clipboard-utils.html` — Paste Mode select, Transform select with optgroup grouping.
+
+**Releasing:** always via `npm run release`, never `npm run build` + pack by hand. Plain `build` does not produce the native host, and a package without it falls back to a browser *silently* — the failure is invisible without inspecting the archive. `scripts/verify-package.mjs` gates the release on four things that each nearly shipped broken: the host missing, its code signature invalid after `lipo`, the host not executable, and the packaged manifest version not matching the tree. Each check is proven to fail when it should.
+
+Two packaging behaviours worth knowing:
+- `streamdeck pack` stores **no permission bits** for any entry, so the host extracts non-executable; `findHosts()` repairs this at runtime (see above)
+- It already excludes sourcemaps, so a stale `bin/plugin.js.map` from watch mode is harmless and needs no `.sdignore` rule
 
 **Manifest:** `com.quickclips.streamdeck.sdPlugin/manifest.json` — defines both action UUIDs, button states, and icon paths. macOS 12+ only (Windows support deferred). Quick Text Utils uses font size 10 and bottom title alignment defined in manifest States.
 

@@ -2,6 +2,9 @@
     "scripts": {
         "build": "rollup -c",
         "build:native": "bash native/build.sh",
+        "verify": "node scripts/verify-package.mjs",
+        "pack": "streamdeck pack com.quickclips.streamdeck.sdPlugin --force",
+        "release": "npm test && npm run build && npm run build:native && npm run pack && npm run verify",
         "watch": "rollup -c -w --watch.onEnd=\"streamdeck restart com.quickclips.streamdeck\"",
         "test": "vitest run",
         "test:watch": "vitest"
