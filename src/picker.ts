@@ -71,6 +71,15 @@ const BROWSER_CANDIDATES = [
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 /**
+ * How long a host gets to fetch the page before it is judged to have failed.
+ *
+ * A host that macOS refuses to run does not always exit — a blocked binary can hang instead,
+ * which is indistinguishable from a launched host until you notice it never asked for the page.
+ * Without this, such a host consumed the full idle timeout and then reported a cancellation, so
+ * the picker silently did nothing rather than falling back to a browser that was right there.
+ */
+const PAGE_LOAD_TIMEOUT_MS = 6_000;
+/**
  * Target size of the *content area*. The head script adds the browser's own chrome (title bar
  * and borders) on top of these, so the usable area is these dimensions on any browser.
  */
@@ -593,6 +602,8 @@ export async function showPicker(
         let settled = false;
         let child: ChildProcess | undefined;
         let timer: NodeJS.Timeout | undefined;
+        let loadWatchdog: NodeJS.Timeout | undefined;
+        let pageServed = false;
 
         const server = createServer(handle);
 
@@ -600,6 +611,7 @@ export async function showPicker(
             if (settled) return;
             settled = true;
             if (timer) clearTimeout(timer);
+            if (loadWatchdog) clearTimeout(loadWatchdog);
             server.close();
             // The app window owns no other tabs, so terminating it is safe.
             child?.kill();
@@ -611,6 +623,7 @@ export async function showPicker(
             if (settled) return;
             settled = true;
             if (timer) clearTimeout(timer);
+            if (loadWatchdog) clearTimeout(loadWatchdog);
             server.close();
             child?.kill();
             reject(new PickerHostLaunchError(`${browserPath} failed to launch: ${detail}`));
@@ -625,6 +638,9 @@ export async function showPicker(
             }
 
             if (url.pathname === "/") {
+                // Proof the host actually launched and rendered something.
+                pageServed = true;
+                if (loadWatchdog) clearTimeout(loadWatchdog);
                 res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(html);
                 return;
             }
@@ -719,6 +735,11 @@ export async function showPicker(
             });
 
             timer = setTimeout(() => finish(null), timeoutMs);
+            loadWatchdog = setTimeout(() => {
+                if (!pageServed) {
+                    failLaunch(`never requested the page within ${PAGE_LOAD_TIMEOUT_MS}ms`);
+                }
+            }, PAGE_LOAD_TIMEOUT_MS);
         });
     });
 }
