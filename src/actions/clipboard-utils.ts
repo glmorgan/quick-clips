@@ -170,6 +170,9 @@ export class ClipboardUtils extends SingletonAction<UtilSettings> {
 
     private holdTrackers = new Map<string, { timer: NodeJS.Timeout | null; configMode: boolean }>();
 
+    /** Buttons whose transform picker is on screen; see ClipboardManager.open for why. */
+    private open = new Set<string>();
+
     /**
      * Shows the transform picker, trying each available window host in turn (native, then any
      * Chromium-family browser) and falling back to the osascript list if none can display.
@@ -288,7 +291,17 @@ return item 1 of chosen`;
         if (tracker?.configMode) {
             // Hold — show picker to reconfigure transform. The picker is pure configuration,
             // so it never touches the clipboard.
-            const chosen = await this.promptTransform(settings.transform);
+            if (this.open.has(ev.action.id)) {
+                streamDeck.logger.info("Picker already open for this button; ignoring the press");
+                return;
+            }
+            this.open.add(ev.action.id);
+            let chosen: TransformType | null;
+            try {
+                chosen = await this.promptTransform(settings.transform);
+            } finally {
+                this.open.delete(ev.action.id);
+            }
             if (chosen) {
                 const newSettings: UtilSettings = { ...settings, transform: chosen };
                 await ev.action.setSettings(newSettings);

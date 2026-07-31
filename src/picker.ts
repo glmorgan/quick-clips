@@ -31,8 +31,40 @@ export type PickerItem = {
     icon?: string;
     /** Secondary line under the label — the clip's text, or a generated sample. */
     preview?: string;
+    /**
+     * The user-set name, when there is one. Distinct from `label`, which may be a derived
+     * summary — the editor must open with what the user typed, not with generated text.
+     */
+    title?: string;
+    /** Whether this row is currently masked, so the control can show the right state. */
+    hidden?: boolean;
+    /**
+     * Exactly what the filter should match, when the visible text is not the whole story — a
+     * named row displays its name but should still be findable by its value, and a masked row
+     * must *not* be findable by the value it is hiding. Falls back to the label.
+     */
+    search?: string;
     /** Hex accent used for the selected-card outline; should match the icon's own accent bar. */
     accent?: string;
+    /**
+     * Short computed tag shown at the start of the row, e.g. "JSON" or "URL". Rendered in a
+     * fixed-width slot so the badges line up into a scannable column.
+     */
+    badge?: {
+        text: string;
+        accent?: string;
+        /**
+         * Renders the badge slot as a filled colour chip instead of a label. Only a literal hex
+         * colour is honoured — see the sanitising in renderHtml.
+         */
+        swatch?: string;
+        /**
+         * Extra words the filter should match, so a row can be found by its *kind* and not only
+         * its contents — typing "json" finds JSON clips, not clips mentioning the word. Needed
+         * especially for a swatch, which displays no text at all to match against.
+         */
+        search?: string;
+    };
 };
 
 export type PickerOptions = {
@@ -56,6 +88,25 @@ export type PickerOptions = {
      */
     onAction?: (actionId: string) => Promise<PickerItem[]>;
     /**
+     * Deletes an item. Supplying this puts a delete control on every row and binds the Delete
+     * key; omit it and the picker stays read-only. Returns the updated list to re-render.
+     */
+    onDelete?: (itemId: string) => Promise<PickerItem[]>;
+    /**
+     * Renames an item. Supplying this puts an edit control on every row and enables inline
+     * editing of the label. An empty string means "clear the name".
+     *
+     * Editing happens inline rather than via `prompt()`, which silently does nothing in the
+     * native host unless the web view implements a text-input panel.
+     */
+    onRename?: (itemId: string, title: string) => Promise<PickerItem[]>;
+    /**
+     * Toggles whether an item's value is masked on screen. Supplying this puts a hide control on
+     * every row. Masking is the caller's job — the picker only renders what it is given and
+     * reports the toggle.
+     */
+    onToggleHidden?: (itemId: string) => Promise<PickerItem[]>;
+    /**
      * Whether the caller will type or paste immediately after a selection. When true the
      * picker waits for the window to close *and* for focus to land back on a real app before
      * resolving; otherwise keystrokes race the closing window. Off by default because the
@@ -70,7 +121,7 @@ export type PickerOptions = {
     layout?: "grid" | "list";
     /** Placeholder for the filter field; defaults to a generic prompt. */
     filterPlaceholder?: string;
-    /** Abandon the picker and resolve `null` after this many ms. */
+    /** Abandon the picker and resolve `null` after this many ms *without interaction*. */
     timeoutMs?: number;
     /**
      * Diagnostic channel: unservable assets, and anything the window host writes to stderr
@@ -99,6 +150,12 @@ const BROWSER_CANDIDATES = [
     "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
 ];
 
+/**
+ * How long the picker may sit *idle* before giving up and closing.
+ *
+ * Re-armed on every interaction, so it bounds abandonment rather than the whole session — an
+ * absolute limit would close the window mid-task on anyone working through a list.
+ */
 const DEFAULT_TIMEOUT_MS = 60_000;
 /**
  * How long a host gets to fetch the page before it is judged to have failed.
@@ -235,6 +292,54 @@ function embedJson(value: unknown): string {
 
 const DEFAULT_ACCENT = "#6d9eeb";
 
+/**
+ * Eye / eye-with-slash for the hide toggle.
+ *
+ * Inline SVG rather than a Unicode glyph: the eye emoji renders in colour and ignores the
+ * surrounding text colour, and Unicode has no dependable struck-through eye at all. `currentColor`
+ * lets the existing contrast rules drive these the same as the other controls.
+ */
+const EYE_SVG =
+    `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"`
+    + ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">`
+    + `<path d="M2 12c3-5.5 6.7-8 10-8s7 2.5 10 8c-3 5.5-6.7 8-10 8s-7-2.5-10-8Z"/>`
+    + `<circle cx="12" cy="12" r="3.2"/></svg>`;
+
+const PENCIL_SVG =
+    `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"`
+    + ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">`
+    + `<path d="M4 20.5l4.2-1L20 7.7a2.1 2.1 0 0 0-3-3L5 16.4 4 20.5Z"/>`
+    + `<path d="M14.8 6.9l2.9 2.9"/></svg>`;
+
+const CROSS_SVG =
+    `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"`
+    + ` stroke-width="2" stroke-linecap="round" aria-hidden="true">`
+    + `<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>`;
+
+const EYE_OFF_SVG =
+    `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"`
+    + ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">`
+    + `<path d="M2 12c3-5.5 6.7-8 10-8s7 2.5 10 8c-3 5.5-6.7 8-10 8s-7-2.5-10-8Z"/>`
+    + `<circle cx="12" cy="12" r="3.2"/>`
+    + `<path d="M3.5 3.5l17 17"/></svg>`;
+
+/** Hex colours only. The value originates from the user's clipboard and lands in a style
+ * attribute, so it is re-validated here rather than trusted from the caller. */
+const HEX_COLOUR = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
+function renderBadge(badge: PickerItem["badge"]): string {
+    if (!badge) return "";
+    // A swatch shows the colour itself, which a text label cannot. Deliberately a *filled* chip
+    // with a neutral ring rather than tinted text: a near-black or near-white value would be
+    // invisible if the colour were used for the border or glyph.
+    if (badge.swatch && HEX_COLOUR.test(badge.swatch)) {
+        return `<span class="badge swatch" title="${escapeHtml(badge.swatch)}"`
+            + ` style="--swatch:${escapeHtml(badge.swatch)}"></span>`;
+    }
+    return `<span class="badge" style="--badge:${escapeHtml(badge.accent ?? "#8b8b93")}">`
+        + `${escapeHtml(badge.text)}</span>`;
+}
+
 function renderHtml(
     items: PickerItem[],
     token: string,
@@ -249,18 +354,32 @@ function renderHtml(
         const cards = items
             .filter(i => i.group === group)
             .map(item => `
-        <button class="card${item.id === selectedId ? " is-current" : ""}" role="option"
+        <div class="card${item.id === selectedId ? " is-current" : ""}" role="option" tabindex="-1"
                 data-id="${escapeHtml(item.id)}"
                 data-label="${escapeHtml(item.label)}"
-                data-search="${escapeHtml((item.label + " " + item.group).toLowerCase())}"
+                data-title="${escapeHtml(item.title ?? "")}"
+                data-search="${escapeHtml(
+                    [item.search ?? item.label, item.group,
+                     item.badge?.search ?? item.badge?.text ?? ""]
+                        .join(" ").toLowerCase()
+                )}"
                 ${item.id === selectedId ? 'title="Currently set on this button"' : ""}
                 style="--accent:${escapeHtml(item.accent ?? DEFAULT_ACCENT)}">
           ${item.icon ? `<img class="icon" src="/icon?t=${token}&p=${encodeURIComponent(item.icon)}" alt="" />` : ""}
+          ${renderBadge(item.badge)}
           <span class="text">
             <span class="label">${escapeHtml(item.label)}</span>
             ${item.preview ? `<span class="preview">${escapeHtml(item.preview)}</span>` : ""}
           </span>
-        </button>`)
+          ${(options.onToggleHidden || options.onRename || options.onDelete)
+            ? `<span class="controls">` : ""}
+          ${options.onToggleHidden ? `<span class="hide${item.hidden ? " on" : ""}" role="button"`
+            + ` title="${item.hidden ? "Show value" : "Hide value from view (not encrypted)"}">`
+            + (item.hidden ? EYE_OFF_SVG : EYE_SVG) + `</span>` : ""}
+          ${options.onRename ? `<span class="edit" role="button" title="Rename (or press F2)">` + PENCIL_SVG + `</span>` : ""}
+          ${options.onDelete ? `<span class="del" role="button" title="Delete (or press Delete)">` + CROSS_SVG + `</span>` : ""}
+          ${(options.onToggleHidden || options.onRename || options.onDelete) ? `</span>` : ""}
+        </div>`)
             .join("");
         return `<section><h2>${escapeHtml(group)}</h2><div class="grid">${cards}</div></section>`;
     }).join("");
@@ -268,13 +387,14 @@ function renderHtml(
     // Action rows come first so an empty collection still offers something to do.
     const actionSection = (actions ?? []).length === 0 ? "" : `
     <section><div class="grid">${(actions ?? []).map(a => `
-      <button class="card is-action" data-action="${escapeHtml(a.id)}">
+      <div class="card is-action" role="option" tabindex="-1" data-action="${escapeHtml(a.id)}"
+           data-label="${escapeHtml(a.label)}" data-search="">
         <span class="plus">+</span>
         <span class="text">
           <span class="label">${escapeHtml(a.label)}</span>
           ${a.hint ? `<span class="preview">${escapeHtml(a.hint)}</span>` : ""}
         </span>
-      </button>`).join("")}</div></section>`;
+      </div>`).join("")}</div></section>`;
 
     // Light tokens are declared twice: once behind the media query (the `auto` default) and
     // once behind [data-theme="light"], so an explicit override beats the OS in both directions.
@@ -400,7 +520,7 @@ function renderHtml(
     background: var(--header);
     backdrop-filter: saturate(180%) blur(20px);
     border-bottom: 1px solid var(--line);
-    padding: 18px 0 0;
+    padding: 12px 0 0;
   }
   .titles { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
   h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.015em; }
@@ -408,7 +528,7 @@ function renderHtml(
 
   .searchbar {
     display: flex; align-items: center; gap: 9px;
-    margin: 12px 0 0; padding: 0 0 13px;
+    margin: 7px 0 0; padding: 0 0 9px;
   }
   .searchbar svg { flex: 0 0 15px; color: var(--fg-faint); }
   #q {
@@ -418,17 +538,17 @@ function renderHtml(
   #q::placeholder { color: var(--fg-faint); }
   #count { flex: 0 0 auto; font-size: 11px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
 
-  main { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 4px 0 18px; }
+  main { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 2px 0 12px; }
   main::-webkit-scrollbar { width: 10px; }
   main::-webkit-scrollbar-thumb {
     background: var(--kbd); border-radius: 99px;
     border: 3px solid transparent; background-clip: content-box;
   }
 
-  section { margin-top: 16px; }
+  section { margin-top: 11px; }
   section.hidden { display: none; }
   h2 {
-    margin: 0 0 8px; font-size: 10px; font-weight: 700; letter-spacing: .08em;
+    margin: 0 0 5px; font-size: 10px; font-weight: 700; letter-spacing: .08em;
     text-transform: uppercase; color: var(--fg-faint);
   }
 
@@ -437,14 +557,18 @@ function renderHtml(
     grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   }
   /* One row per item, full width — long stored text is unreadable in narrow columns. */
-  html[data-layout="list"] .grid { grid-template-columns: 1fr; gap: 7px; }
+  html[data-layout="list"] .grid { grid-template-columns: 1fr; gap: 5px; }
 
   .card {
     position: relative; display: flex; align-items: center; gap: 10px;
-    padding: 11px 12px; min-width: 0;
+    padding: 8px 12px; min-width: 0;
     border: 2px solid var(--card-line); border-radius: 11px;
     background: var(--card); color: inherit; text-align: left;
     font: inherit; cursor: pointer; box-shadow: var(--shadow);
+    /* Rows were <button> elements until an <input> had to live inside one: nesting interactive
+       controls in a button is invalid, and the browser routes Space and Enter to the button,
+       so typing a label with a space in it selected the row and pasted it. */
+    outline: none; user-select: none;
     transition: border-color 110ms ease, box-shadow 110ms ease, transform 110ms ease, background 110ms ease;
   }
   .card.hidden { display: none; }
@@ -471,8 +595,15 @@ function renderHtml(
   /* Icons are shown exactly as they appear on the Stream Deck key — no tint, no container. */
   .icon { flex: 0 0 30px; width: 30px; height: 30px; object-fit: contain; display: block; filter: var(--glyph); }
 
-  .text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+  /*
+   * Label and preview sit on one line rather than stacking, so a row is the same height whether
+   * or not it has been given a name. Stacking made named rows taller and left the list with a
+   * ragged rhythm; padding the short rows to match would have wasted the space on every
+   * unnamed row instead.
+   */
+  .text { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1 1 auto; }
   .preview {
+    flex: 1 1 auto; min-width: 0;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
     font-size: 10.5px; color: var(--fg-dim); letter-spacing: -.01em;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -486,8 +617,76 @@ function renderHtml(
     flex: 0 0 30px; width: 30px; height: 30px; display: grid; place-items: center;
     border-radius: 8px; background: var(--kbd); color: var(--fg-dim); font-size: 17px;
   }
+  /*
+   * Always visible rather than revealed on hover: a control you cannot see is a control you do
+   * not know exists, and a hover-only target on a full-width row is easy to miss entirely.
+   * Sized generously for the same reason — the glyph is small but the hit area is not.
+   */
+  /*
+   * Fixed width so badges form an aligned column — the point is scanning a long list, which a
+   * ragged left edge defeats. Border plus a faint infill of the same hue reads as a tag without
+   * competing with the clip text for attention.
+   */
+  .badge {
+    flex: 0 0 52px; width: 52px; text-align: center;
+    padding: 3px 0; border-radius: 5px;
+    font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--badge);
+    border: 1px solid color-mix(in srgb, var(--badge) 45%, transparent);
+    background: color-mix(in srgb, var(--badge) 12%, transparent);
+  }
+
+  .badge.swatch {
+    background: var(--swatch);
+    border: 1px solid rgba(255,255,255,.28);
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,.35);
+    padding: 0; height: 20px;
+  }
+
+  /*
+   * Contrast, not opacity. A faint glyph at 45% measured 1.49:1 against the card, well under
+   * the 3:1 WCAG asks of non-text controls — and hover only reached 2.18:1. Setting the colour
+   * directly gives 4.48:1 at rest and full contrast on hover, with no compounding.
+   */
+  /*
+   * The row's 10px gap applies between every child, which spaced the controls as far apart from
+   * each other as from the text. Clustering them keeps the row readable as "content, then
+   * actions" and buys back horizontal space.
+   */
+  .controls { flex: 0 0 auto; display: flex; align-items: center; gap: 1px; margin-left: 2px; }
+
+  .hide, .edit, .del {
+    flex: 0 0 auto; width: 26px; height: 26px; display: grid; place-items: center;
+    border-radius: 6px; color: var(--fg-dim); line-height: 1;
+    transition: background 110ms ease, color 110ms ease;
+  }
+  .hide svg, .edit svg, .del svg { display: block; }
+  .card:hover .hide, .card.active .hide { color: var(--fg); }
+  .hide:hover { background: var(--kbd); color: var(--fg); }
+  /* A masked row keeps its control lit, so the state is legible without hovering. */
+  .hide.on { color: var(--accent); }
+
+  .card:hover .edit, .card.active .edit { color: var(--fg); }
+  .edit:hover { background: var(--kbd); color: var(--fg); }
+  /* The inline editor replaces the label in place, so the row does not jump while renaming. */
+  .rename {
+    flex: 1 1 auto; min-width: 0; font: inherit; font-size: 13px; font-weight: 550;
+    color: var(--fg); background: var(--bg); border: 1px solid var(--accent);
+    border-radius: 6px; padding: 3px 7px; outline: none;
+  }
+
+  .del {
+    flex: 0 0 auto; width: 30px; height: 30px; display: grid; place-items: center;
+    border-radius: 7px; color: var(--fg-faint); font-size: 17px; line-height: 1;
+    opacity: .45; transition: opacity 110ms ease, background 110ms ease, color 110ms ease;
+  }
+  .card:hover .del, .card.active .del { opacity: .85; }
+  .del:hover { opacity: 1; background: var(--kbd); color: #ff6b6b; }
   .label {
-    min-width: 0; font-size: 13px; font-weight: 550;
+    /* Shrinks before the value does, but never grows past its content — a long name should not
+       push the value off the row entirely. */
+    flex: 0 1 auto; min-width: 0; max-width: 55%;
+    font-size: 13px; font-weight: 550;
     letter-spacing: -.008em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .label mark { background: transparent; color: var(--mark); font-weight: 700; }
@@ -549,6 +748,8 @@ function renderHtml(
   <div class="wrap">
     <span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> navigate</span>
     <span><kbd>↵</kbd> select</span>
+    ${options.onRename ? "<span><kbd>F2</kbd> rename</span>" : ""}
+    ${options.onDelete ? "<span><kbd>del</kbd> remove</span>" : ""}
     <span><kbd>esc</kbd> cancel</span>
   </div>
 </footer>
@@ -574,10 +775,27 @@ function renderHtml(
     return cards.filter(function (c) { return !c.classList.contains('hidden'); });
   }
 
+  /**
+   * Index of the first row that can actually be chosen.
+   *
+   * Action rows are never hidden by the filter, so they sit at index 0 and would otherwise be
+   * the default target — pressing Enter after narrowing to one clip would "Add from clipboard"
+   * instead of pasting the match. Falls back to 0 when nothing selectable remains, which is the
+   * empty-collection case where the action row is the only sensible target.
+   */
+  function firstSelectable() {
+    var vis = visible();
+    for (var i = 0; i < vis.length; i++) {
+      if (!vis[i].dataset.action) return i;
+    }
+    return 0;
+  }
+
   /** Re-renders the label with the matched substring wrapped in <mark>. */
   function highlight(card, term) {
     var label = card.dataset.label;
     var el = card.querySelector('.label');
+    if (!label || !el) return;
     if (!term) { el.textContent = label; return; }
     var at = label.toLowerCase().indexOf(term);
     if (at === -1) { el.textContent = label; return; }
@@ -599,7 +817,11 @@ function renderHtml(
         .some(function (c) { return !c.classList.contains('hidden'); });
       s.classList.toggle('hidden', !any);
     });
-    count.textContent = vis.length === cards.length ? '' : vis.length + ' of ' + cards.length;
+    // Action rows are always visible, so counting them would make the total look wrong.
+    var selectable = cards.filter(function (c) { return !c.dataset.action; });
+    var visSelectable = vis.filter(function (c) { return !c.dataset.action; });
+    count.textContent = visSelectable.length === selectable.length
+      ? '' : visSelectable.length + ' of ' + selectable.length;
   }
 
   /**
@@ -643,6 +865,44 @@ function renderHtml(
    * Reloading re-renders server-side, which avoids maintaining a second copy of the card
    * markup in JS; the page is local so the reload is imperceptible.
    */
+  /**
+   * Rebuilds the list after it changed, without navigating.
+   *
+   * Neither location.reload() nor location.replace() reliably re-renders inside the native web
+   * view — the row stayed on screen after a delete even though it was already gone from
+   * settings, and only reappeared corrected when the window was reopened. Fetching the fresh
+   * markup and swapping <main> sidesteps navigation and caching altogether, and keeps the
+   * filter text and scroll position intact as a bonus.
+   */
+  function refresh() {
+    fetch(location.pathname + '?t=' + encodeURIComponent(TOKEN) + '&_=' + Date.now(),
+          { cache: 'no-store' })
+      .then(function (r) { return r.text(); })
+      .then(function (markup) {
+        var doc = new DOMParser().parseFromString(markup, 'text/html');
+        var fresh = doc.querySelector('main .wrap');
+        var current = document.querySelector('main .wrap');
+        if (!fresh || !current) return;
+        current.innerHTML = fresh.innerHTML;
+        // Re-query, because every node in <main> was just replaced.
+        cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
+        sections = Array.prototype.slice.call(document.querySelectorAll('section'));
+        empty = document.getElementById('empty');
+        bindCards();
+        // Re-apply the active filter so a mutation does not silently widen the list.
+        var term = q.value.trim().toLowerCase();
+        cards.forEach(function (c) {
+          if (c.dataset.action) return;
+          var hay = c.dataset.search || '';
+          c.classList.toggle('hidden', term !== '' && hay.indexOf(term) === -1);
+          highlight(c, term);
+        });
+        active = firstSelectable();
+        paint();
+      })
+      .catch(function (e) { report('refresh failed: ' + e); });
+  }
+
   function runAction(actionId) {
     if (sent) return;
     fetch('/message?t=' + encodeURIComponent(TOKEN), {
@@ -651,8 +911,127 @@ function renderHtml(
       body: JSON.stringify({ type: 'action', action: actionId })
     }).then(function (r) { return r.json(); }).then(function (res) {
       if (res && res.message) { showNotice(res.message); }
-      else { location.reload(); }
+      else { refresh(); }
     }).catch(function () {});
+  }
+
+  /** Removes an item, keeping the window open so the list can be worked through. */
+  function runDelete(itemId) {
+    if (sent) return;
+    fetch('/message?t=' + encodeURIComponent(TOKEN), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'delete', id: itemId })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res && res.message) { showNotice(res.message); return; }
+      // Removed in place rather than re-fetching: navigation does not re-render inside the
+      // native web view, and a local node removal cannot fail for environment reasons.
+      var card = null;
+      for (var i = 0; i < cards.length; i++) {
+        if (cards[i].dataset.id === itemId) { card = cards[i]; break; }
+      }
+      // Where the row sat, so the highlight can stay put instead of jumping to the top of the
+      // list — which lands on a row the pointer never touched and reads as a phantom hover.
+      var wasAt = card ? visible().indexOf(card) : -1;
+      if (card && card.parentNode) { card.parentNode.removeChild(card); }
+      cards = cards.filter(function (c) { return c !== card; });
+
+      var after = visible();
+      if (wasAt === -1 || after.length === 0) {
+        active = firstSelectable();
+      } else {
+        // Whatever slid up into the vacated slot, clamped when the last row was removed.
+        active = Math.min(wasAt, after.length - 1);
+        // Never settle on the Add row while a real clip is still available.
+        if (after[active] && after[active].dataset.action) active = firstSelectable();
+      }
+      paint();
+    }).catch(function (e) { report('delete failed: ' + e); });
+  }
+
+  /** Sends a page-side failure to the plugin log; these are otherwise completely invisible. */
+  function report(message) {
+    try {
+      fetch('/message?t=' + encodeURIComponent(TOKEN), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'error', message: String(message) }), keepalive: true
+      }).catch(function () {});
+    } catch (e) { /* nothing more we can do from here */ }
+  }
+
+  window.addEventListener('error', function (e) {
+    report('uncaught: ' + (e && e.message) + ' @' + (e && e.lineno));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    report('unhandled rejection: ' + (e && e.reason));
+  });
+
+  /** True while a row is being renamed, so global keys do not fight the editor. */
+  function isEditing() {
+    return !!document.querySelector('.rename');
+  }
+
+  /**
+   * Swaps the row's label for an input, in place.
+   *
+   * prompt() would be simpler but does nothing in the native host unless the web view
+   * implements a text-input panel, so the editor is ordinary DOM.
+   */
+  function beginRename(card) {
+    if (isEditing()) return;
+    var text = card.querySelector('.text');
+    var labelEl = card.querySelector('.label');
+    if (!text || !labelEl) return;
+
+    var input = document.createElement('input');
+    input.className = 'rename';
+    input.type = 'text';
+    input.value = card.dataset.title || '';
+    input.placeholder = 'Name this clip';
+    labelEl.style.display = 'none';
+    text.insertBefore(input, labelEl);
+    input.focus();
+    input.select();
+
+    var done = false;
+    function finishEdit(commit) {
+      if (done) return;
+      done = true;
+      var next = input.value;
+      input.remove();
+      labelEl.style.display = '';
+      if (!commit) return;
+      fetch('/message?t=' + encodeURIComponent(TOKEN), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'rename', id: card.dataset.id, title: next })
+      }).then(function (r) { return r.json(); }).then(function (res) {
+        if (res && res.message) { showNotice(res.message); return; }
+        refresh();
+      }).catch(function (e) { report('rename failed: ' + e); });
+    }
+
+    input.addEventListener('keydown', function (e) {
+      // Every key, not just the ones handled below — Space used to reach the row and activate
+      // it while a label containing a space was being typed.
+      e.stopPropagation();
+      if (e.key === 'Enter') { e.preventDefault(); finishEdit(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finishEdit(false); }
+    });
+    input.addEventListener('keyup', function (e) { e.stopPropagation(); });
+    input.addEventListener('keypress', function (e) { e.stopPropagation(); });
+    input.addEventListener('blur', function () { finishEdit(true); });
+    input.addEventListener('click', function (e) { e.stopPropagation(); });
+  }
+
+  function runToggleHidden(itemId) {
+    if (sent) return;
+    fetch('/message?t=' + encodeURIComponent(TOKEN), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'hide', id: itemId })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res && res.message) { showNotice(res.message); return; }
+      refresh();
+    }).catch(function (e) { report('hide toggle failed: ' + e); });
   }
 
   function showNotice(text) {
@@ -665,14 +1044,20 @@ function renderHtml(
   q.addEventListener('input', function () {
     var term = q.value.trim().toLowerCase();
     cards.forEach(function (c) {
-      c.classList.toggle('hidden', term !== '' && c.dataset.search.indexOf(term) === -1);
+      // Action rows stay visible while filtering — "Add from clipboard" is most useful exactly
+      // when a search found nothing. They also carry no searchable text of their own.
+      if (c.dataset.action) return;
+      var hay = c.dataset.search || '';
+      c.classList.toggle('hidden', term !== '' && hay.indexOf(term) === -1);
       highlight(c, term);
     });
-    active = 0;
+    active = firstSelectable();
     paint();
   });
 
   document.addEventListener('keydown', function (e) {
+    // The inline editor owns the keyboard while it is open.
+    if (isEditing()) return;
     var vis = visible();
     if (e.key === 'ArrowRight') { e.preventDefault(); active = Math.min(active + 1, vis.length - 1); paint(); }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); active = Math.max(active - 1, 0); paint(); }
@@ -687,23 +1072,68 @@ function renderHtml(
       if (card.dataset.action) { runAction(card.dataset.action); return; }
       send(card.dataset.id);
     }
+    else if (e.key === 'F2') {
+      var renameTarget = vis[active];
+      if (renameTarget && !renameTarget.dataset.action && renameTarget.querySelector('.edit')) {
+        e.preventDefault();
+        beginRename(renameTarget);
+      }
+    }
+    else if (e.key === 'Delete' || e.key === 'Backspace') {
+      // Only when not typing a filter, or this would eat ordinary editing.
+      if (document.activeElement === q && q.value !== '') return;
+      var target = vis[active];
+      if (target && !target.dataset.action && target.querySelector('.del')) {
+        e.preventDefault();
+        runDelete(target.dataset.id);
+      }
+    }
     else if (e.key === 'Escape') { e.preventDefault(); send(null); }
   });
 
-  cards.forEach(function (card) {
-    card.addEventListener('click', function () {
-      if (card.dataset.action) { runAction(card.dataset.action); return; }
-      send(card.dataset.id);
+  function bindCards() {
+    cards.forEach(function (card) {
+      if (card.dataset.bound) return;
+      card.dataset.bound = '1';
+      var hide = card.querySelector('.hide');
+      if (hide) {
+        hide.addEventListener('click', function (e) {
+          e.stopPropagation();
+          runToggleHidden(card.dataset.id);
+        });
+      }
+      var edit = card.querySelector('.edit');
+      if (edit) {
+        edit.addEventListener('click', function (e) {
+          e.stopPropagation();   // must not select and paste the row
+          beginRename(card);
+        });
+      }
+      var del = card.querySelector('.del');
+      if (del) {
+        del.addEventListener('click', function (e) {
+          // Must not fall through to the card's own click, which would select and paste it.
+          e.stopPropagation();
+          runDelete(card.dataset.id);
+        });
+      }
+      card.addEventListener('click', function () {
+        if (card.dataset.action) { runAction(card.dataset.action); return; }
+        send(card.dataset.id);
+      });
+      card.addEventListener('mousemove', function () {
+        var at = visible().indexOf(card);
+        if (at !== -1 && at !== active) { active = at; paint(); }
+      });
     });
-    card.addEventListener('mousemove', function () {
-      var at = visible().indexOf(card);
-      if (at !== -1 && at !== active) { active = at; paint(); }
-    });
-  });
+  }
+  bindCards();
 
   window.addEventListener('beforeunload', function () { if (!sent) send(null); });
 
-  // Open on the button's current setting so reconfiguring starts from where it is now.
+  // Open on the button's current setting so reconfiguring starts from where it is now,
+  // otherwise on the first selectable row rather than an action button.
+  active = firstSelectable();
   if (SELECTED) {
     for (var i = 0; i < cards.length; i++) {
       if (cards[i].dataset.id === SELECTED) { active = i; break; }
@@ -764,6 +1194,13 @@ export async function showPicker(
             waitForFocusHandoff().then(() => resolve(result), () => resolve(result));
         }
 
+        /** (Re)starts the idle countdown; every interaction pushes the deadline back. */
+        function armIdleTimer(): void {
+            if (settled) return;
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => finish(null), timeoutMs);
+        }
+
         /** A host that never displayed anything — the caller should try the next one. */
         function failLaunch(detail: string): void {
             if (settled) return;
@@ -787,7 +1224,14 @@ export async function showPicker(
                 // Proof the host actually launched and rendered something.
                 pageServed = true;
                 if (loadWatchdog) clearTimeout(loadWatchdog);
-                res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(html);
+                // no-store because the page is regenerated on every add and delete. Without it
+                // the reload after a mutation is served from the web view's cache, so the item
+                // stays on screen even though it is already gone from settings.
+                res.writeHead(200, {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Cache-Control": "no-store, no-cache, must-revalidate",
+                    "Pragma": "no-cache",
+                }).end(html);
                 return;
             }
 
@@ -820,16 +1264,110 @@ export async function showPicker(
             }
 
             if (url.pathname === "/message" && req.method === "POST") {
+                // The user is still here; push the idle deadline back.
+                armIdleTimer();
                 let body = "";
                 req.on("data", chunk => { body += chunk; });
                 req.on("end", () => {
-                    let parsed: { type?: unknown; id?: unknown; action?: unknown };
+                    let parsed: { type?: unknown; id?: unknown; action?: unknown; message?: unknown; title?: unknown };
                     try {
                         parsed = JSON.parse(body);
                     } catch {
                         // malformed body — treat as a cancel rather than guessing intent
                         res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
                         finish(null);
+                        return;
+                    }
+
+                    // Page-side failures, so they reach the plugin log instead of vanishing.
+                    if (parsed.type === "error" && typeof parsed.message === "string") {
+                        warn(`picker page error: ${parsed.message}`);
+                        res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                        return;
+                    }
+
+                    // Hiding mutates the list and leaves the window open.
+                    if (parsed.type === "hide" && typeof parsed.id === "string") {
+                        const toggle = options.onToggleHidden;
+                        if (!toggle) {
+                            res.writeHead(200, { "Content-Type": "application/json" })
+                                .end(JSON.stringify({ message: "Not supported" }));
+                            return;
+                        }
+                        toggle(parsed.id)
+                            .then(updated => {
+                                currentItems = updated;
+                                allowedIcons = new Set(
+                                    updated.map(i => i.icon).filter((p): p is string => !!p)
+                                );
+                                html = renderHtml(
+                                    currentItems, token, { ...options, title }, options.theme ?? "dark"
+                                );
+                                res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                            })
+                            .catch((error: unknown) => {
+                                const message = error instanceof Error ? error.message : "Failed";
+                                warn(`picker hide toggle failed: ${message}`);
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ message }));
+                            });
+                        return;
+                    }
+
+                    // Rename mutates the list and leaves the window open.
+                    if (parsed.type === "rename" && typeof parsed.id === "string"
+                        && typeof parsed.title === "string") {
+                        const rename = options.onRename;
+                        if (!rename) {
+                            res.writeHead(200, { "Content-Type": "application/json" })
+                                .end(JSON.stringify({ message: "Not supported" }));
+                            return;
+                        }
+                        rename(parsed.id, parsed.title)
+                            .then(updated => {
+                                currentItems = updated;
+                                allowedIcons = new Set(
+                                    updated.map(i => i.icon).filter((p): p is string => !!p)
+                                );
+                                html = renderHtml(
+                                    currentItems, token, { ...options, title }, options.theme ?? "dark"
+                                );
+                                res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                            })
+                            .catch((error: unknown) => {
+                                const message = error instanceof Error ? error.message : "Failed";
+                                warn(`picker rename failed: ${message}`);
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ message }));
+                            });
+                        return;
+                    }
+
+                    // Delete mutates the list and leaves the window open, like an action row.
+                    if (parsed.type === "delete" && typeof parsed.id === "string") {
+                        const remove = options.onDelete;
+                        if (!remove) {
+                            res.writeHead(200, { "Content-Type": "application/json" })
+                                .end(JSON.stringify({ message: "Not supported" }));
+                            return;
+                        }
+                        remove(parsed.id)
+                            .then(updated => {
+                                currentItems = updated;
+                                allowedIcons = new Set(
+                                    updated.map(i => i.icon).filter((p): p is string => !!p)
+                                );
+                                html = renderHtml(
+                                    currentItems, token, { ...options, title }, options.theme ?? "dark"
+                                );
+                                res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                            })
+                            .catch((error: unknown) => {
+                                const message = error instanceof Error ? error.message : "Failed";
+                                warn(`picker delete failed: ${message}`);
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ message }));
+                            });
                         return;
                     }
 
@@ -914,7 +1452,7 @@ export async function showPicker(
                 }
             });
 
-            timer = setTimeout(() => finish(null), timeoutMs);
+            armIdleTimer();
             loadWatchdog = setTimeout(() => {
                 if (!pageServed) {
                     failLaunch(`never requested the page within ${PAGE_LOAD_TIMEOUT_MS}ms`);

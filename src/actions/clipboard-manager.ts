@@ -3,12 +3,46 @@ import {
     DidReceiveSettingsEvent, SendToPluginEvent, streamDeck,
 } from "@elgato/streamdeck";
 import { randomUUID } from "node:crypto";
-import { addClip, promoteClip, type ClipEntry } from "../utils.js";
+import {
+    addClip, clipRowText, clipSearchText, detectClipKind, promoteClip, removeClip, renameClip,
+    toggleClipHidden, type ClipEntry, type ClipKind,
+} from "../utils.js";
 import { findHosts, showPicker, type PickerItem } from "../picker.js";
 import { outputText, readClipboard } from "../typing.js";
 
 /** Id of the picker row that captures the current clipboard. Not a clip id. */
 const ADD_ACTION = "add-from-clipboard";
+
+/**
+ * Badge shown for each detected clip shape. Colours reuse the palette the transform icons
+ * already use, so URL clips read the same purple as the URL transforms.
+ */
+const KIND_BADGES: Record<ClipKind, { text: string; accent: string; search: string }> = {
+    // `search` carries synonyms so the filter is forgiving about what a kind is called —
+    // "colour" and "hex" both find swatches, "token" finds JWTs. These are matched but never
+    // shown, which is what lets a swatch be searchable despite displaying no text.
+    json: { text: "JSON", accent: "#93c47d", search: "json data object" },
+    url: { text: "URL", accent: "#ad7dc4", search: "url link http web" },
+    path: { text: "Path", accent: "#6d9eeb", search: "path file folder directory" },
+    email: { text: "Email", accent: "#e69138", search: "email address mail" },
+    uuid: { text: "UUID", accent: "#76a5af", search: "uuid guid id identifier" },
+    jwt: { text: "JWT", accent: "#a64d79", search: "jwt token bearer auth" },
+    color: { text: "Color", accent: "#c27ba0", search: "color colour hex swatch" },
+    ip: { text: "IP", accent: "#45818e", search: "ip address host network" },
+    date: { text: "Date", accent: "#bf9000", search: "date time timestamp iso" },
+    text: { text: "Text", accent: "#8b8b93", search: "text plain" },
+};
+
+/**
+ * Badge for a clip. A detected colour renders as the colour itself rather than the word
+ * "Color" — the one kind where the value carries more information than its name.
+ */
+function buildBadge(value: string): { text: string; accent: string; search: string; swatch?: string } {
+    const kind = detectClipKind(value);
+    return kind === "color"
+        ? { ...KIND_BADGES.color, swatch: value.trim() }
+        : KIND_BADGES[kind];
+}
 
 type ManagerSettings = {
     /** Collection name, shown on the key and as the picker heading. */
@@ -32,18 +66,35 @@ type ManagerSettings = {
  */
 @action({ UUID: "com.quickclips.streamdeck.clipboard-manager" })
 export class ClipboardManager extends SingletonAction<ManagerSettings> {
-
-
-
-
+    /**
+     * Buttons whose picker is currently on screen.
+     *
+     * Each press otherwise spawns its own window host and local server, so holding or repeatedly
+     * tapping a key stacks up windows that all mutate the same collection. Keyed by action id so
+     * two different collection buttons can still each open their own.
+     */
+    private open = new Set<string>();
 
     private toPickerItems(clips: ClipEntry[]): PickerItem[] {
-        return clips.map(clip => ({
+        return clips.map(clip => {
+            const row = clipRowText(clip);
+            return {
             id: clip.id,
             group: "Clips",
-            label: clip.label,
+            // Derived at render time rather than read from the stored label, so the row uses
+            // whatever width the window has instead of a cap fixed when the clip was captured.
+            // A URL with no user title shows its host as the name and the path beside it.
+            label: row.label,
+            preview: row.detail,
+            title: clip.title,
+            hidden: clip.hidden,
+            // Name plus value, except for hidden clips where the value is deliberately omitted —
+            // matching on it would highlight the row as you typed the secret.
+            search: `${row.label} ${clipSearchText(clip)}`,
+            badge: buildBadge(clip.value),
             // No icon: stored text has no artwork, and the picker renders the row without one.
-        }));
+            };
+        });
     }
 
     private async updateDisplay(
@@ -85,6 +136,21 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
     }
 
     override async onKeyUp(ev: KeyUpEvent<ManagerSettings>): Promise<void> {
+        if (this.open.has(ev.action.id)) {
+            // Already showing for this button — a second window would be confusing and would
+            // race the first one's writes.
+            streamDeck.logger.info("Picker already open for this button; ignoring the press");
+            return;
+        }
+        this.open.add(ev.action.id);
+        try {
+            await this.handleKeyUp(ev);
+        } finally {
+            this.open.delete(ev.action.id);
+        }
+    }
+
+    private async handleKeyUp(ev: KeyUpEvent<ManagerSettings>): Promise<void> {
         const settings = await ev.action.getSettings();
         // Held in a local rather than re-read per action, so the picker and the final paste
         // agree on one list even though the picker mutates it while open.
@@ -97,7 +163,10 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
             await this.updateDisplay(ev, updated);
         };
 
-        const chosenId = await this.pick(clips, settings, persist);
+        // A getter, not the array: `pick` runs for the lifetime of the window and every add or
+        // delete replaces the list, so anything captured by value goes stale after the first
+        // mutation — which made a second add overwrite the first.
+        const chosenId = await this.pick(() => clips, settings, persist);
         if (!chosenId) return;
 
         const clip = clips.find(c => c.id === chosenId);
@@ -125,16 +194,17 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
      * or null when cancelled or when no host could display.
      */
     private async pick(
-        clips: ClipEntry[],
+        getClips: () => ClipEntry[],
         settings: ManagerSettings,
         persist: (next: ClipEntry[]) => Promise<void>
     ): Promise<string | null> {
         const title = settings.name?.trim() || "Quick Clips Manager";
 
         const onAction = async (actionId: string): Promise<PickerItem[]> => {
-            if (actionId !== ADD_ACTION) return this.toPickerItems(clips);
+            if (actionId !== ADD_ACTION) return this.toPickerItems(getClips());
             const text = await readClipboard().catch(() => "");
-            const result = addClip(clips, text, randomUUID(), Date.now());
+            // Read through the getter every time, so successive adds build on each other.
+            const result = addClip(getClips(), text, randomUUID(), Date.now());
             if (!result.added) {
                 // Surfaced in the picker window rather than thrown away, so the user learns why.
                 throw new Error(result.reason === "empty"
@@ -147,9 +217,9 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
 
         for (const host of await findHosts()) {
             try {
-                return await showPicker(this.toPickerItems(clips), host, {
+                return await showPicker(this.toPickerItems(getClips()), host, {
                     title,
-                    subtitle: clips.length ? "Pick a clip to paste" : "This collection is empty",
+                    subtitle: getClips().length ? "Pick a clip to paste" : "This collection is empty",
                     // Stored text is long; full-width rows keep it readable.
                     layout: "list",
                     filterPlaceholder: "Filter clips…",
@@ -159,6 +229,21 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
                         hint: "Store whatever is currently copied",
                     }],
                     onAction,
+                    onToggleHidden: async (clipId: string) => {
+                        await persist(toggleClipHidden(getClips(), clipId));
+                        return this.toPickerItems(getClips());
+                    },
+                    onRename: async (clipId: string, newTitle: string) => {
+                        await persist(renameClip(getClips(), clipId, newTitle));
+                        return this.toPickerItems(getClips());
+                    },
+                    onDelete: async (clipId: string) => {
+                        await persist(removeClip(getClips(), clipId));
+                        return this.toPickerItems(getClips());
+                    },
+                    // Browsing and tidying a collection takes longer than picking a transform,
+                    // and reading a clip counts as no interaction at all.
+                    timeoutMs: 180_000,
                     // A selection is pasted immediately, so the window must be gone and focus
                     // back on the target app before we send any keystrokes.
                     awaitFocusHandoff: true,

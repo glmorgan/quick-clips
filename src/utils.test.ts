@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
     addClip, applyTransform, escapeForAppleScript, generateLabel, isGenerator,
-    promoteClip, removeClip, summarizeClip, MAX_CLIPS, MAX_CLIP_CHARS, type ClipEntry,
+    promoteClip, removeClip, renameClip, clipDisplayName, clipRowText, clipSearchText,
+    toggleClipHidden, splitUrl,
+    summarizeClip, detectClipKind,
+    MAX_CLIPS, MAX_CLIP_CHARS, type ClipEntry,
 } from "./utils.js";
 import { isKeystrokeSafe } from "./typing.js";
 
@@ -206,6 +209,108 @@ describe("escapeForAppleScript", () => {
     });
 });
 
+describe("detectClipKind", () => {
+    const kind = detectClipKind;
+
+    it("parses real JSON objects and arrays", () => {
+        expect(kind('{"a":1}')).toBe("json");
+        expect(kind('[1,2,3]')).toBe("json");
+        expect(kind('  { "nested": { "x": [1] } }  ')).toBe("json");
+    });
+    it("does not badge JSON-looking text that will not parse", () => {
+        // Pattern-matching braces would call this JSON; parsing correctly refuses
+        expect(kind('{ this is not json }')).toBe("text");
+        expect(kind('{"unclosed": 1')).toBe("text");
+    });
+    it("does not badge bare scalars, which are technically valid JSON", () => {
+        expect(kind("123")).toBe("text");
+        expect(kind('"just a string"')).toBe("text");
+        expect(kind("true")).toBe("text");
+    });
+
+    it("detects a whole-value URL", () => {
+        expect(kind("https://example.com/a?b=c")).toBe("url");
+        expect(kind("http://127.0.0.1:8080/x")).toBe("url");
+    });
+    it("treats prose mentioning a URL as text", () => {
+        expect(kind("see https://example.com for details")).toBe("text");
+    });
+
+    it("detects a canonical UUID", () =>
+        expect(kind("4e2562fd-b9b7-4977-9353-85da53cfdf91")).toBe("uuid"));
+    it("accepts uppercase UUIDs", () =>
+        expect(kind("4E2562FD-B9B7-4977-9353-85DA53CFDF91")).toBe("uuid"));
+    it("accepts non-v4 UUIDs, which are still UUIDs", () =>
+        expect(kind("00000000-0000-1000-8000-000000000000")).toBe("uuid"));
+    it("rejects near-misses rather than mislabelling them", () => {
+        expect(kind("4e2562fd-b9b7-4977-9353-85da53cfdf9")).toBe("text");   // too short
+        expect(kind("4e2562fd-b9b7-4977-9353-85da53cfdf911")).toBe("text"); // too long
+        expect(kind("4e2562fdb9b749779353 85da53cfdf91")).toBe("text");     // wrong shape
+        expect(kind("zzzzzzzz-b9b7-4977-9353-85da53cfdf91")).toBe("text");  // not hex
+    });
+    it("treats a sentence containing a UUID as text", () =>
+        expect(kind("id is 4e2562fd-b9b7-4977-9353-85da53cfdf91")).toBe("text"));
+
+    it("detects a JWT by decoding its header", () => {
+        const jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig";
+        expect(kind(jwt)).toBe("jwt");
+    });
+    it("rejects a dotted string that only looks like a JWT", () => {
+        // Right shape, but the header does not decode to JSON with an alg
+        expect(kind("aaa.bbb.ccc")).toBe("text");
+        expect(kind("one.two.three.four")).toBe("text");
+    });
+
+    it("detects hex colours", () => {
+        expect(kind("#fff")).toBe("color");
+        expect(kind("#1e1e1e")).toBe("color");
+        expect(kind("#FF8800CC")).toBe("color");
+    });
+    it("rejects malformed hex colours", () => {
+        expect(kind("#12345")).toBe("text");
+        expect(kind("#gggggg")).toBe("text");
+    });
+
+    it("detects IPv4 and IPv6", () => {
+        expect(kind("192.168.1.10")).toBe("ip");
+        expect(kind("127.0.0.1")).toBe("ip");
+        expect(kind("2001:db8::1")).toBe("ip");
+    });
+    it("rejects out-of-range octets a regex would accept", () =>
+        expect(kind("999.1.1.1")).toBe("text"));
+
+    it("detects ISO dates and timestamps", () => {
+        expect(kind("2026-07-29")).toBe("date");
+        expect(kind("2026-07-29T09:52:44")).toBe("date");
+        expect(kind("2026-07-29T09:52:44.616Z")).toBe("date");
+    });
+    it("rejects impossible calendar dates", () => {
+        expect(kind("2026-13-45")).toBe("text");
+        expect(kind("2026-02-30")).toBe("text");
+        expect(kind("2026-07-29T25:99:00")).toBe("text");
+    });
+    it("treats a log line beginning with a timestamp as text", () =>
+        expect(kind("2026-07-31T13:02:40.616Z WARN picker-host: frame 860x702")).toBe("text"));
+
+    it("detects an email address", () => expect(kind("glen@example.com")).toBe("email"));
+    it("treats a sentence containing an address as text", () =>
+        expect(kind("mail glen@example.com today")).toBe("text"));
+
+    it("detects unix and home paths", () => {
+        expect(kind("/Users/glen/Documents/GitHub/quick-clips")).toBe("path");
+        expect(kind("~/Library/Application Support")).toBe("path");
+    });
+    it("detects a Windows path", () => expect(kind("C:\\Users\\glen\\file.txt")).toBe("path"));
+    it("treats a multi-line blob starting with a slash as text", () =>
+        expect(kind("/one\n/two")).toBe("text"));
+
+    it("falls back to text", () => {
+        expect(kind("The quick brown fox")).toBe("text");
+        expect(kind("")).toBe("text");
+        expect(kind("   ")).toBe("text");
+    });
+});
+
 describe("clip collections", () => {
     const mk = (value: string, id: string, at = 0): ClipEntry =>
         ({ id, label: summarizeClip(value), value, addedAt: at });
@@ -215,10 +320,20 @@ describe("clip collections", () => {
             expect(summarizeClip("a\n\n  b\tc")).toBe("a b c"));
         it("marks blank text rather than returning an empty label", () =>
             expect(summarizeClip("   \n ")).toBe("(blank)"));
-        it("truncates long text with an ellipsis", () => {
+        it("leaves text well past the old 72-char cap intact", () => {
+            // The picker truncates with CSS, which adapts to the window; capping in JS first
+            // just discarded text the row had room for.
             const s = summarizeClip("x".repeat(200));
+            expect(s).toBe("x".repeat(200));
+            expect(s.endsWith("…")).toBe(false);
+        });
+        it("still truncates pathologically long text", () => {
+            const s = summarizeClip("x".repeat(5000));
             expect(s.endsWith("…")).toBe(true);
-            expect(s.length).toBeLessThanOrEqual(73);
+            expect(s.length).toBeLessThanOrEqual(401);
+        });
+        it("honours an explicit cap", () => {
+            expect(summarizeClip("abcdefghij", 4)).toBe("abcd…");
         });
     });
 
@@ -247,6 +362,34 @@ describe("clip collections", () => {
             expect(r.clips.map(c => c.value)).toEqual(["c", "a", "b"]);
             expect(r.clips).toHaveLength(3);
         });
+        it("preserves a user title when the same value is captured again", () => {
+            // Re-copying something you already named must not silently discard the name
+            const named = renameClip(addClip([], "abc", "id1", 1).clips, "id1", "P1 Client Id");
+            const again = addClip(named, "abc", "id2", 2);
+            expect(again.clips).toHaveLength(1);
+            expect(again.clips[0].title).toBe("P1 Client Id");
+        });
+        it("allows two clips to share a title when their values differ", () => {
+            let clips = addClip([], "value-one", "id1", 1).clips;
+            clips = addClip(clips, "value-two", "id2", 2).clips;
+            clips = renameClip(clips, "id1", "Client Id");
+            clips = renameClip(clips, "id2", "Client Id");
+            expect(clips).toHaveLength(2);
+            expect(clips.map(c => c.title)).toEqual(["Client Id", "Client Id"]);
+            // Distinct ids keep selection, rename and delete unambiguous despite the shared name
+            expect(new Set(clips.map(c => c.id)).size).toBe(2);
+        });
+        it("removes only the intended clip when titles collide", () => {
+            let clips = addClip([], "value-one", "id1", 1).clips;
+            clips = addClip(clips, "value-two", "id2", 2).clips;
+            clips = renameClip(clips, "id1", "Same");
+            clips = renameClip(clips, "id2", "Same");
+            const left = removeClip(clips, "id1");
+            expect(left).toHaveLength(1);
+            // The survivor is the *other* clip — deletion follows the id, not the shared title
+            expect(left[0].id).toBe("id2");
+            expect(left[0].value).toBe("value-two");
+        });
         it("keeps the original id when de-duplicating", () => {
             const r = addClip([mk("a", "keep-me")], "a", "fresh-id", 1);
             expect(r.clips[0].id).toBe("keep-me");
@@ -269,6 +412,121 @@ describe("clip collections", () => {
             addClip(clips, "b", "2", 0);
             expect(clips).toHaveLength(1);
         });
+    });
+
+    describe("renameClip", () => {
+        it("sets a user title", () => {
+            const r = renameClip([mk("4e25-…", "1")], "1", "P1 Client Id");
+            expect(r[0].title).toBe("P1 Client Id");
+        });
+        it("trims surrounding whitespace", () =>
+            expect(renameClip([mk("v", "1")], "1", "  Padded  ")[0].title).toBe("Padded"));
+        it("clears the title when blank, rather than storing an empty string", () => {
+            const named = renameClip([mk("v", "1")], "1", "Name");
+            const cleared = renameClip(named, "1", "   ");
+            expect(cleared[0].title).toBeUndefined();
+        });
+        it("leaves other clips untouched", () => {
+            const r = renameClip([mk("a", "1"), mk("b", "2")], "1", "First");
+            expect(r[1].title).toBeUndefined();
+        });
+        it("ignores unknown ids", () =>
+            expect(renameClip([mk("a", "1")], "nope", "X")[0].title).toBeUndefined());
+        it("does not mutate the input", () => {
+            const clips = [mk("a", "1")];
+            renameClip(clips, "1", "Name");
+            expect(clips[0].title).toBeUndefined();
+        });
+        it("never overwrites the value", () =>
+            expect(renameClip([mk("secret-value", "1")], "1", "Label")[0].value).toBe("secret-value"));
+    });
+
+    describe("clipDisplayName", () => {
+        it("prefers the user title", () =>
+            expect(clipDisplayName({ ...mk("some long value", "1"), title: "My Name" })).toBe("My Name"));
+        it("falls back to a summary of the value", () =>
+            expect(clipDisplayName(mk("some long value", "1"))).toBe("some long value"));
+        it("falls back when the title is only whitespace", () =>
+            expect(clipDisplayName({ ...mk("the value", "1"), title: "   " })).toBe("the value"));
+    });
+
+    describe("splitUrl", () => {
+        it("splits host from path", () =>
+            expect(splitUrl("https://github.com/glmorgan/quick-clips"))
+                .toEqual({ host: "github.com", rest: "/glmorgan/quick-clips" }));
+        it("keeps the port, which distinguishes local services", () =>
+            expect(splitUrl("http://localhost:8080/admin")?.host).toBe("localhost:8080"));
+        it("keeps query and fragment", () =>
+            expect(splitUrl("https://x.com/a?b=c#d")?.rest).toBe("/a?b=c#d"));
+        it("treats a bare root path as no remainder", () =>
+            expect(splitUrl("https://example.com/")).toEqual({ host: "example.com", rest: "" }));
+        it("returns null for non-URLs", () => {
+            expect(splitUrl("not a url")).toBeNull();
+            expect(splitUrl("see https://example.com for details")).toBeNull();
+            expect(splitUrl("/Users/glen/docs")).toBeNull();
+        });
+    });
+
+    describe("clipRowText", () => {
+        it("uses the host as the name for an unnamed URL", () => {
+            const r = clipRowText(mk("https://github.com/glmorgan/quick-clips", "1"));
+            expect(r).toEqual({ label: "github.com", detail: "/glmorgan/quick-clips" });
+        });
+        it("shows no detail for a bare host", () =>
+            expect(clipRowText(mk("https://example.com", "1")))
+                .toEqual({ label: "example.com", detail: undefined }));
+        it("lets a user title override the derived host", () => {
+            const clip = { ...mk("https://github.com/a", "1"), title: "Repo" };
+            expect(clipRowText(clip).label).toBe("Repo");
+            expect(clipRowText(clip).detail).toBe("https://github.com/a");
+        });
+        it("falls back to the value for non-URLs", () =>
+            expect(clipRowText(mk("plain text here", "1")))
+                .toEqual({ label: "plain text here", detail: undefined }));
+    });
+
+    describe("hiding", () => {
+        const secret = () => ({ ...mk("sk_live_abcdef123456", "1"), title: "Stripe Key" });
+
+        it("toggles on and off", () => {
+            const on = toggleClipHidden([secret()], "1");
+            expect(on[0].hidden).toBe(true);
+            expect(toggleClipHidden(on, "1")[0].hidden).toBeUndefined();
+        });
+        it("does not mutate the input", () => {
+            const clips = [secret()];
+            toggleClipHidden(clips, "1");
+            expect(clips[0].hidden).toBeUndefined();
+        });
+        it("never alters the value — masking is display only", () => {
+            const on = toggleClipHidden([secret()], "1");
+            expect(on[0].value).toBe("sk_live_abcdef123456");
+        });
+
+        it("masks the value in the row, keeping the name", () => {
+            const row = clipRowText({ ...secret(), hidden: true });
+            expect(row.label).toBe("Stripe Key");
+            expect(row.detail).not.toContain("sk_live");
+            expect(row.detail).toMatch(/^•+$/);
+        });
+        it("masks the label too when the clip has no name", () => {
+            const row = clipRowText({ ...mk("sk_live_abcdef123456", "1"), hidden: true });
+            expect(row.label).not.toContain("sk_live");
+            expect(row.label).toMatch(/^•+$/);
+        });
+        it("uses a fixed-width mask, so the value length does not leak", () => {
+            const short = clipRowText({ ...mk("abc", "1"), hidden: true }).label;
+            const long = clipRowText({ ...mk("a".repeat(400), "2"), hidden: true }).label;
+            expect(short).toBe(long);
+        });
+
+        it("excludes a hidden value from the search text", () => {
+            const text = clipSearchText({ ...secret(), hidden: true });
+            expect(text).toBe("Stripe Key");
+            expect(text).not.toContain("sk_live");
+        });
+        it("includes the value when not hidden", () =>
+            expect(clipSearchText(secret())).toContain("sk_live_abcdef123456"));
     });
 
     describe("removeClip", () => {
