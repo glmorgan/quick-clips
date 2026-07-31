@@ -5,7 +5,7 @@ import {
 import { randomUUID } from "node:crypto";
 import {
     addClip, clipRowText, clipSearchText, detectClipKind, promoteClip, removeClip, renameClip,
-    toggleClipHidden, type ClipEntry, type ClipKind,
+    restoreClip, toggleClipHidden, type ClipEntry, type ClipKind,
 } from "../utils.js";
 import { findHosts, showPicker, type PickerItem } from "../picker.js";
 import { outputText, readClipboard } from "../typing.js";
@@ -200,6 +200,16 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
     ): Promise<string | null> {
         const title = settings.name?.trim() || "Quick Clips Manager";
 
+        /**
+         * The last deletion, so it can be taken back.
+         *
+         * Deliberately only for the life of this window, and never written to settings: deleting
+         * is one click on a small target with no confirmation, and undo exists to take back a
+         * misaimed one. Persisting it would make this a trash can — somewhere clips you meant to
+         * destroy quietly linger, which is the opposite of what someone masking a secret wants.
+         */
+        let lastDeleted: { clip: ClipEntry; index: number } | null = null;
+
         const onAction = async (actionId: string): Promise<PickerItem[]> => {
             if (actionId !== ADD_ACTION) return this.toPickerItems(getClips());
             const text = await readClipboard().catch(() => "");
@@ -222,6 +232,9 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
                     subtitle: getClips().length ? "Pick a clip to paste" : "This collection is empty",
                     // Stored text is long; full-width rows keep it readable.
                     layout: "list",
+                    // Narrower than the transform grid: most clips are short, so the extra width
+                    // was mostly trailing whitespace. Long values still ellipsise gracefully.
+                    width: 720,
                     filterPlaceholder: "Filter clips…",
                     actions: [{
                         id: ADD_ACTION,
@@ -238,7 +251,28 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
                         return this.toPickerItems(getClips());
                     },
                     onDelete: async (clipId: string) => {
-                        await persist(removeClip(getClips(), clipId));
+                        // Position captured too, so undo puts the clip back where it was rather
+                        // than at the top, which would reorder a list ordered by use.
+                        const before = getClips();
+                        const index = before.findIndex(c => c.id === clipId);
+                        await persist(removeClip(before, clipId));
+                        lastDeleted = index === -1 ? null : { clip: before[index], index };
+                        return this.toPickerItems(getClips());
+                    },
+                    onUndoDelete: async () => {
+                        if (!lastDeleted) throw new Error("Nothing to undo");
+                        const result = restoreClip(getClips(), lastDeleted.clip, lastDeleted.index);
+                        if (!result.restored) {
+                            // "full" is fixable, so the offer stays live for a retry once there is
+                            // room. "duplicate" never becomes possible and nothing was lost, so it
+                            // is dropped and a retry reports that there is nothing left to undo.
+                            if (result.reason === "duplicate") lastDeleted = null;
+                            throw new Error(result.reason === "full"
+                                ? "Collection is full — delete something first"
+                                : "That clip is already in the collection");
+                        }
+                        lastDeleted = null;
+                        await persist(result.clips);
                         return this.toPickerItems(getClips());
                     },
                     // Browsing and tidying a collection takes longer than picking a transform,

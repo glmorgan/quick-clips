@@ -93,6 +93,14 @@ export type PickerOptions = {
      */
     onDelete?: (itemId: string) => Promise<PickerItem[]>;
     /**
+     * Restores whatever `onDelete` last removed. Supplying this turns the post-delete notice into
+     * an Undo affordance and binds ⌘Z to it; omit it and a delete is final.
+     *
+     * Returns the updated list to re-render, or throws with a reason the restore could not
+     * happen, which the picker shows in place of the notice.
+     */
+    onUndoDelete?: () => Promise<PickerItem[]>;
+    /**
      * Renames an item. Supplying this puts an edit control on every row and enables inline
      * editing of the label. An empty string means "clear the name".
      *
@@ -121,6 +129,13 @@ export type PickerOptions = {
     layout?: "grid" | "list";
     /** Placeholder for the filter field; defaults to a generic prompt. */
     filterPlaceholder?: string;
+    /**
+     * Content-area size. Per-caller because the two pickers want different shapes: the transform
+     * grid needs width to hold four columns without scrolling, while a list of clips mostly has
+     * short rows and reads better narrower.
+     */
+    width?: number;
+    height?: number;
     /** Abandon the picker and resolve `null` after this many ms *without interaction*. */
     timeoutMs?: number;
     /**
@@ -311,9 +326,11 @@ const PENCIL_SVG =
     + `<path d="M4 20.5l4.2-1L20 7.7a2.1 2.1 0 0 0-3-3L5 16.4 4 20.5Z"/>`
     + `<path d="M14.8 6.9l2.9 2.9"/></svg>`;
 
+// Heavier stroke than the other two: a cross is two thin diagonals, which lay down less ink
+// than the eye's curves or the pencil's body and so read lighter at the same colour.
 const CROSS_SVG =
     `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"`
-    + ` stroke-width="2" stroke-linecap="round" aria-hidden="true">`
+    + ` stroke-width="2.4" stroke-linecap="round" aria-hidden="true">`
     + `<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>`;
 
 const EYE_OFF_SVG =
@@ -346,6 +363,8 @@ function renderHtml(
     options: Required<Pick<PickerOptions, "title">> & PickerOptions,
     theme: "auto" | "dark" | "light"
 ): string {
+    const winW = options.width ?? WINDOW_WIDTH;
+    const winH = options.height ?? WINDOW_HEIGHT;
     const { title, subtitle, selectedId, actions } = options;
     const layout = options.layout ?? "grid";
 
@@ -367,7 +386,7 @@ function renderHtml(
                 style="--accent:${escapeHtml(item.accent ?? DEFAULT_ACCENT)}">
           ${item.icon ? `<img class="icon" src="/icon?t=${token}&p=${encodeURIComponent(item.icon)}" alt="" />` : ""}
           ${renderBadge(item.badge)}
-          <span class="text">
+          <span class="text${item.preview ? " has-detail" : ""}">
             <span class="label">${escapeHtml(item.label)}</span>
             ${item.preview ? `<span class="preview">${escapeHtml(item.preview)}</span>` : ""}
           </span>
@@ -377,7 +396,7 @@ function renderHtml(
             + ` title="${item.hidden ? "Show value" : "Hide value from view (not encrypted)"}">`
             + (item.hidden ? EYE_OFF_SVG : EYE_SVG) + `</span>` : ""}
           ${options.onRename ? `<span class="edit" role="button" title="Rename (or press F2)">` + PENCIL_SVG + `</span>` : ""}
-          ${options.onDelete ? `<span class="del" role="button" title="Delete (or press Delete)">` + CROSS_SVG + `</span>` : ""}
+          ${options.onDelete ? `<span class="del" role="button" title="Delete this clip">` + CROSS_SVG + `</span>` : ""}
           ${(options.onToggleHidden || options.onRename || options.onDelete) ? `</span>` : ""}
         </div>`)
             .join("");
@@ -431,7 +450,7 @@ function renderHtml(
  * reads as an empty themed window rather than a white flash.
  */
 (function () {
-  var W = ${WINDOW_WIDTH}, H = ${WINDOW_HEIGHT};
+  var W = ${winW}, H = ${winH};
   var root = document.documentElement;
   var revealed = false;
   function reveal() {
@@ -618,6 +637,11 @@ function renderHtml(
     border-radius: 8px; background: var(--kbd); color: var(--fg-dim); font-size: 17px;
   }
   /*
+   * Deleting is click-only, deliberately. Every keyboard binding collided with editing the
+   * filter, which is focused by default: a bare Backspace fired the moment a search term was
+   * cleared, and Cmd+Backspace is macOS's own "delete to beginning of line". A small, specific
+   * target is inherently deliberate in a way a keystroke is not.
+   *
    * Always visible rather than revealed on hover: a control you cannot see is a control you do
    * not know exists, and a hover-only target on a full-width row is easy to miss entirely.
    * Sized generously for the same reason — the glyph is small but the hit area is not.
@@ -668,6 +692,9 @@ function renderHtml(
 
   .card:hover .edit, .card.active .edit { color: var(--fg); }
   .edit:hover { background: var(--kbd); color: var(--fg); }
+
+  .card:hover .del, .card.active .del { color: var(--fg); }
+  .del:hover { background: var(--kbd); color: #ff6b6b; }
   /* The inline editor replaces the label in place, so the row does not jump while renaming. */
   .rename {
     flex: 1 1 auto; min-width: 0; font: inherit; font-size: 13px; font-weight: 550;
@@ -675,20 +702,17 @@ function renderHtml(
     border-radius: 6px; padding: 3px 7px; outline: none;
   }
 
-  .del {
-    flex: 0 0 auto; width: 30px; height: 30px; display: grid; place-items: center;
-    border-radius: 7px; color: var(--fg-faint); font-size: 17px; line-height: 1;
-    opacity: .45; transition: opacity 110ms ease, background 110ms ease, color 110ms ease;
-  }
-  .card:hover .del, .card.active .del { opacity: .85; }
-  .del:hover { opacity: 1; background: var(--kbd); color: #ff6b6b; }
   .label {
-    /* Shrinks before the value does, but never grows past its content — a long name should not
-       push the value off the row entirely. */
-    flex: 0 1 auto; min-width: 0; max-width: 55%;
+    flex: 0 1 auto; min-width: 0;
     font-size: 13px; font-weight: 550;
     letter-spacing: -.008em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  /*
+   * Only capped when a value shares the line, so a long name cannot push it off the row.
+   * Applying this unconditionally truncated every label that had nothing beside it — which is
+   * every card in the transform grid, and every unnamed clip.
+   */
+  .text.has-detail .label { max-width: 55%; }
   .label mark { background: transparent; color: var(--mark); font-weight: 700; }
 
   footer {
@@ -703,11 +727,23 @@ function renderHtml(
 
   #notice {
     position: fixed; left: 50%; bottom: 52px; transform: translateX(-50%) translateY(8px);
+    display: flex; align-items: center; gap: 12px;
     background: var(--card); border: 2px solid var(--card-line); border-radius: 9px;
-    padding: 8px 14px; font-size: 12px; color: var(--fg);
+    padding: 8px 10px 8px 14px; font-size: 12px; color: var(--fg);
     opacity: 0; pointer-events: none; transition: opacity 140ms ease, transform 140ms ease;
   }
-  #notice.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  /* Clickable only while shown, or the invisible toast would swallow clicks on the rows under it. */
+  #notice.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+  /* Bounded so a long clip name cannot stretch the toast past the window. */
+  #notice-text { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #notice-undo {
+    display: none; align-items: center; gap: 6px; padding: 3px 8px;
+    background: var(--kbd); border: 1px solid var(--card-line); border-radius: 6px;
+    font: inherit; font-size: 12px; color: var(--fg); cursor: pointer;
+  }
+  #notice.undoable #notice-undo { display: inline-flex; }
+  #notice-undo:hover { background: var(--card-line); }
+  #notice-undo kbd { background: transparent; color: var(--fg-faint); min-width: 0; padding: 0; }
 
   #empty { display: none; padding: 52px 16px; text-align: center; }
   #empty.show { display: block; }
@@ -743,13 +779,16 @@ function renderHtml(
     </div>
   </div>
 </main>
-<div id="notice"></div>
+<div id="notice">
+  <span id="notice-text"></span>
+  <button id="notice-undo" type="button">Undo <kbd>⌘Z</kbd></button>
+</div>
 <footer>
   <div class="wrap">
     <span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> navigate</span>
     <span><kbd>↵</kbd> select</span>
     ${options.onRename ? "<span><kbd>F2</kbd> rename</span>" : ""}
-    ${options.onDelete ? "<span><kbd>del</kbd> remove</span>" : ""}
+
     <span><kbd>esc</kbd> cancel</span>
   </div>
 </footer>
@@ -764,6 +803,10 @@ function renderHtml(
   var count = document.getElementById('count');
   var active = 0;
   var sent = false;
+  /** Whether the toast is currently offering to undo a delete, which is what arms ⌘Z. */
+  var undoPending = false;
+  /** Identifies the newest notice, so an older one's timer cannot dismiss it early. */
+  var noticeSeq = 0;
 
   function esc(s) {
     return s.replace(/[&<>"']/g, function (c) {
@@ -875,6 +918,13 @@ function renderHtml(
    * filter text and scroll position intact as a bonus.
    */
   function refresh() {
+    // Remember which row was highlighted; the swap below replaces every node, and resetting to
+    // the top made the highlight jump away from the row you just acted on and then snap back as
+    // soon as the pointer moved.
+    var vis = visible();
+    var keepId = vis[active] ? vis[active].dataset.id : null;
+    var keepAction = vis[active] ? vis[active].dataset.action : null;
+
     fetch(location.pathname + '?t=' + encodeURIComponent(TOKEN) + '&_=' + Date.now(),
           { cache: 'no-store' })
       .then(function (r) { return r.text(); })
@@ -897,7 +947,18 @@ function renderHtml(
           c.classList.toggle('hidden', term !== '' && hay.indexOf(term) === -1);
           highlight(c, term);
         });
+        // Restore the previously highlighted row when it still exists, else fall back.
         active = firstSelectable();
+        if (keepId || keepAction) {
+          var after = visible();
+          for (var i = 0; i < after.length; i++) {
+            if ((keepId && after[i].dataset.id === keepId)
+                || (keepAction && after[i].dataset.action === keepAction)) {
+              active = i;
+              break;
+            }
+          }
+        }
         paint();
       })
       .catch(function (e) { report('refresh failed: ' + e); });
@@ -946,6 +1007,10 @@ function renderHtml(
         if (after[active] && after[active].dataset.action) active = firstSelectable();
       }
       paint();
+      if (res && res.undo) {
+        undoPending = true;
+        showNotice(res.label ? 'Deleted “' + res.label + '”' : 'Clip deleted', true);
+      }
     }).catch(function (e) { report('delete failed: ' + e); });
   }
 
@@ -1034,12 +1099,47 @@ function renderHtml(
     }).catch(function (e) { report('hide toggle failed: ' + e); });
   }
 
-  function showNotice(text) {
+  /**
+   * Bottom-centre toast. When undoable it offers to take the last delete back and stays up
+   * longer, since it has to be read and acted on rather than merely noticed.
+   */
+  function showNotice(text, undoable) {
     var el = document.getElementById('notice');
-    el.textContent = text;
+    document.getElementById('notice-text').textContent = text;
+    el.classList.toggle('undoable', !!undoable);
     el.classList.add('show');
-    setTimeout(function () { el.classList.remove('show'); }, 2600);
+    noticeSeq++;
+    var mine = noticeSeq;
+    setTimeout(function () {
+      // A newer notice has taken over the element; leave it alone.
+      if (mine !== noticeSeq) return;
+      el.classList.remove('show');
+      // ⌘Z stops working when the offer disappears, so the shortcut never does something
+      // the window is no longer telling you it will do.
+      undoPending = false;
+    }, undoable ? 8000 : 2600);
   }
+
+  function runUndo() {
+    if (sent || !undoPending) return;
+    undoPending = false;
+    fetch('/message?t=' + encodeURIComponent(TOKEN), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'undo' })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res && res.message) {
+        // Re-armed along with the message, so a restore that failed for a fixable reason —
+        // no room right now — can be retried once the reason is gone.
+        undoPending = true;
+        showNotice(res.message, true);
+        return;
+      }
+      document.getElementById('notice').classList.remove('show');
+      refresh();
+    }).catch(function (e) { report('undo failed: ' + e); });
+  }
+
+  document.getElementById('notice-undo').addEventListener('click', runUndo);
 
   q.addEventListener('input', function () {
     var term = q.value.trim().toLowerCase();
@@ -1058,6 +1158,13 @@ function renderHtml(
   document.addEventListener('keydown', function (e) {
     // The inline editor owns the keyboard while it is open.
     if (isEditing()) return;
+    // Only claimed while an undo is actually on offer. The filter field has focus almost all the
+    // time, so taking ⌘Z unconditionally would cost it its native text undo for nothing.
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z') && undoPending) {
+      e.preventDefault();
+      runUndo();
+      return;
+    }
     var vis = visible();
     if (e.key === 'ArrowRight') { e.preventDefault(); active = Math.min(active + 1, vis.length - 1); paint(); }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); active = Math.max(active - 1, 0); paint(); }
@@ -1077,15 +1184,6 @@ function renderHtml(
       if (renameTarget && !renameTarget.dataset.action && renameTarget.querySelector('.edit')) {
         e.preventDefault();
         beginRename(renameTarget);
-      }
-    }
-    else if (e.key === 'Delete' || e.key === 'Backspace') {
-      // Only when not typing a filter, or this would eat ordinary editing.
-      if (document.activeElement === q && q.value !== '') return;
-      var target = vis[active];
-      if (target && !target.dataset.action && target.querySelector('.del')) {
-        e.preventDefault();
-        runDelete(target.dataset.id);
       }
     }
     else if (e.key === 'Escape') { e.preventDefault(); send(null); }
@@ -1351,7 +1449,42 @@ export async function showPicker(
                                 .end(JSON.stringify({ message: "Not supported" }));
                             return;
                         }
+                        // Captured before the removal, so the notice can name what went. Taken
+                        // from the item rather than the page: this label is already masked for a
+                        // hidden clip, so undoing a secret cannot put its value on screen.
+                        const goneLabel = currentItems.find(i => i.id === parsed.id)?.label;
                         remove(parsed.id)
+                            .then(updated => {
+                                currentItems = updated;
+                                allowedIcons = new Set(
+                                    updated.map(i => i.icon).filter((p): p is string => !!p)
+                                );
+                                html = renderHtml(
+                                    currentItems, token, { ...options, title }, options.theme ?? "dark"
+                                );
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify(options.onUndoDelete
+                                        ? { undo: true, label: goneLabel }
+                                        : {}));
+                            })
+                            .catch((error: unknown) => {
+                                const message = error instanceof Error ? error.message : "Failed";
+                                warn(`picker delete failed: ${message}`);
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ message }));
+                            });
+                        return;
+                    }
+
+                    // Undo restores the last deletion and leaves the window open.
+                    if (parsed.type === "undo") {
+                        const undo = options.onUndoDelete;
+                        if (!undo) {
+                            res.writeHead(200, { "Content-Type": "application/json" })
+                                .end(JSON.stringify({ message: "Nothing to undo" }));
+                            return;
+                        }
+                        undo()
                             .then(updated => {
                                 currentItems = updated;
                                 allowedIcons = new Set(
@@ -1364,7 +1497,7 @@ export async function showPicker(
                             })
                             .catch((error: unknown) => {
                                 const message = error instanceof Error ? error.message : "Failed";
-                                warn(`picker delete failed: ${message}`);
+                                warn(`picker undo failed: ${message}`);
                                 res.writeHead(200, { "Content-Type": "application/json" })
                                     .end(JSON.stringify({ message }));
                             });
@@ -1420,7 +1553,7 @@ export async function showPicker(
             const target = `http://127.0.0.1:${port}/?t=${token}`;
             child = spawn(browserPath, [
                 `--app=${target}`,
-                `--window-size=${WINDOW_WIDTH},${WINDOW_HEIGHT}`,
+                `--window-size=${options.width ?? WINDOW_WIDTH},${options.height ?? WINDOW_HEIGHT}`,
                 "--no-first-run",
                 "--no-default-browser-check",
             ], { stdio: ["ignore", "ignore", "pipe"], detached: false });

@@ -46,6 +46,7 @@ private func requestedContentSize() -> CGSize {
 final class PickerWindowController: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate {
     private var window: NSWindow!
     private var webView: WKWebView!
+    private var parentWatch: Timer?
 
     func show(url: URL, contentSize: CGSize) {
         let config = WKWebViewConfiguration()
@@ -98,6 +99,26 @@ final class PickerWindowController: NSObject, NSWindowDelegate, WKNavigationDele
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        watchParent()
+    }
+
+    /**
+     * Exits when the plugin that spawned this window goes away.
+     *
+     * The page talks to a server owned by the plugin process. If that process restarts or
+     * crashes, this window is re-parented to launchd and left on screen with every control
+     * silently hitting a dead server — visible, but inert. Nothing else notices: the plugin
+     * cannot clean up a child it no longer knows about, and the page has no way to tell a
+     * closed server from a slow one.
+     */
+    private func watchParent() {
+        let originalParent = getppid()
+        parentWatch = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            if getppid() != originalParent {
+                log("plugin process went away; closing")
+                NSApp.terminate(nil)
+            }
+        }
     }
 
     /// Centres horizontally and biases above centre, matching the browser build's placement.
@@ -198,8 +219,11 @@ guard let raw = flagValue("app"), let url = URL(string: raw), url.scheme != nil 
 }
 
 let app = NSApplication.shared
-// .regular so the window can take keyboard focus for type-to-filter; the process is short-lived.
-app.setActivationPolicy(.regular)
+// .accessory, not .regular: a transient picker should not register as a full application. The
+// regular policy adds a Dock icon and the whole app-launch ceremony, which is what made opening
+// feel like a second or two of loading. Accessory windows can still become key and take
+// keyboard focus, which type-to-filter needs.
+app.setActivationPolicy(.accessory)
 
 // AppKit routes the standard editing shortcuts through the Edit menu's key equivalents, so
 // without a menu bar Cmd+V, Cmd+C and Cmd+A simply do nothing — you could not paste into the

@@ -378,6 +378,35 @@ export function removeClip(clips: readonly ClipEntry[], id: string): ClipEntry[]
 }
 
 /**
+ * Puts a deleted clip back where it was, for undo.
+ *
+ * Restores by position rather than to the front. Deleting is a single click on a small target
+ * with no confirmation, so the common undo is taking back a misaimed one — and that should
+ * leave the collection exactly as it was. Promoting the clip instead would quietly reorder a
+ * list whose order the user builds by using it. The index is clamped, since adds and deletes
+ * may have moved things in the meantime.
+ *
+ * Refuses rather than forcing the entry in, so an undo can never destroy something else:
+ * `duplicate` when the value is already back (a second undo, or the same text re-captured),
+ * `full` when the collection has since filled up and inserting would push out the oldest clip.
+ */
+export function restoreClip(
+    clips: readonly ClipEntry[],
+    clip: ClipEntry,
+    index: number
+): { clips: ClipEntry[]; restored: boolean; reason?: "duplicate" | "full" } {
+    if (clips.some(c => c.id === clip.id || c.value === clip.value)) {
+        return { clips: [...clips], restored: false, reason: "duplicate" };
+    }
+    if (clips.length >= MAX_CLIPS) {
+        return { clips: [...clips], restored: false, reason: "full" };
+    }
+    const next = [...clips];
+    next.splice(Math.max(0, Math.min(index, clips.length)), 0, clip);
+    return { clips: next, restored: true };
+}
+
+/**
  * Moves a clip to the front, so what gets used most stays reachable without any pinning UI.
  * Unknown ids are returned unchanged rather than throwing.
  */

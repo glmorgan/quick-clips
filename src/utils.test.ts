@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
     addClip, applyTransform, escapeForAppleScript, generateLabel, isGenerator,
-    promoteClip, removeClip, renameClip, clipDisplayName, clipRowText, clipSearchText,
+    promoteClip, removeClip, renameClip, restoreClip, clipDisplayName, clipRowText, clipSearchText,
     toggleClipHidden, splitUrl,
     summarizeClip, detectClipKind,
     MAX_CLIPS, MAX_CLIP_CHARS, type ClipEntry,
@@ -534,6 +534,64 @@ describe("clip collections", () => {
             expect(removeClip([mk("a", "1"), mk("b", "2")], "1").map(c => c.value)).toEqual(["b"]));
         it("ignores unknown ids", () =>
             expect(removeClip([mk("a", "1")], "nope")).toHaveLength(1));
+    });
+
+    describe("restoreClip", () => {
+        const three = () => [mk("a", "1"), mk("b", "2"), mk("c", "3")];
+
+        it("puts the clip back at the index it was deleted from", () => {
+            const clips = three();
+            const gone = clips[1];
+            const after = removeClip(clips, "2");
+            const r = restoreClip(after, gone, 1);
+            expect(r.restored).toBe(true);
+            expect(r.clips.map(c => c.value)).toEqual(["a", "b", "c"]);
+        });
+        it("restores the entry unchanged, including its title and hidden flag", () => {
+            const secret: ClipEntry = { ...mk("sk_live_x", "s1"), title: "Stripe", hidden: true };
+            const r = restoreClip([], secret, 0);
+            expect(r.clips[0]).toEqual(secret);
+        });
+        it("clamps an index past the end of a list that shrank meanwhile", () => {
+            const gone = mk("z", "9");
+            const r = restoreClip([mk("a", "1")], gone, 7);
+            expect(r.clips.map(c => c.value)).toEqual(["a", "z"]);
+        });
+        it("still lands at the front when the deleted clip was first", () => {
+            const clips = three();
+            const r = restoreClip(removeClip(clips, "1"), clips[0], 0);
+            expect(r.clips.map(c => c.value)).toEqual(["a", "b", "c"]);
+        });
+        it("does not mutate the list it was given", () => {
+            const after = [mk("a", "1")];
+            restoreClip(after, mk("b", "2"), 0);
+            expect(after).toHaveLength(1);
+        });
+        it("refuses a second undo of the same clip", () => {
+            const clips = three();
+            const restored = restoreClip(removeClip(clips, "2"), clips[1], 1);
+            const again = restoreClip(restored.clips, clips[1], 1);
+            expect(again.restored).toBe(false);
+            expect(again.reason).toBe("duplicate");
+            expect(again.clips).toHaveLength(3);
+        });
+        it("refuses when the same text was captured again under a new id", () => {
+            const gone = mk("shared-text", "old");
+            const readded = addClip([], "shared-text", "new", 1).clips;
+            const r = restoreClip(readded, gone, 0);
+            expect(r.restored).toBe(false);
+            expect(r.reason).toBe("duplicate");
+        });
+        it("refuses rather than pushing out the oldest clip when full", () => {
+            let clips: ClipEntry[] = [];
+            for (let i = 0; i < MAX_CLIPS; i++) clips = addClip(clips, `v${i}`, `id${i}`, i).clips;
+            const r = restoreClip(clips, mk("restored", "extra"), 0);
+            expect(r.restored).toBe(false);
+            expect(r.reason).toBe("full");
+            // The clip that would have been evicted is still there
+            expect(r.clips).toHaveLength(MAX_CLIPS);
+            expect(r.clips.some(c => c.value === "v0")).toBe(true);
+        });
     });
 
     describe("promoteClip", () => {
