@@ -101,6 +101,24 @@ if (!inArchive("bin/picker-host")) {
     }
 }
 
+// --- 3b. the bundle is a production build ----------------------------------------------------
+// `npm run watch` rebuilds unminified and with a sourcemap. If it is running during a release it
+// can overwrite the production bundle between `build` and `pack`, so the package silently ships a
+// dev build. Caught here rather than trusted, because nothing else would notice.
+{
+    const packedJs = execFileSync("unzip", ["-p", ARCHIVE, `${PLUGIN_DIR}/${bundle}`], { encoding: "utf8" });
+    const lines = packedJs.split("\n").length;
+    if (packedJs.includes("sourceMappingURL")) {
+        fail(`${bundle} references a sourcemap — that is a watch build, not a production one. ` +
+             `Stop \`npm run watch\` and re-run the release.`);
+    } else if (lines > 50) {
+        fail(`${bundle} spans ${lines} lines and is not minified — likely a watch build. ` +
+             `Stop \`npm run watch\` and re-run the release.`);
+    } else {
+        ok("bundle is a minified production build");
+    }
+}
+
 // --- 4. every icon the code references is packaged ------------------------------------------
 // Derived from the built bundle rather than the source, so it reflects what actually ships.
 //

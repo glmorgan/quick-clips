@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { applyTransform, escapeForAppleScript, generateLabel, isGenerator } from "./utils.js";
+import {
+    addClip, applyTransform, escapeForAppleScript, generateLabel, isGenerator,
+    promoteClip, removeClip, summarizeClip, MAX_CLIPS, MAX_CLIP_CHARS, type ClipEntry,
+} from "./utils.js";
+import { isKeystrokeSafe } from "./typing.js";
 
 describe("applyTransform", () => {
     describe("upper", () => {
@@ -200,6 +204,101 @@ describe("escapeForAppleScript", () => {
     it("always produces a single-line result", () => {
         expect(escapeForAppleScript("one\ntwo\r\nthree")).not.toMatch(/[\r\n]/);
     });
+});
+
+describe("clip collections", () => {
+    const mk = (value: string, id: string, at = 0): ClipEntry =>
+        ({ id, label: summarizeClip(value), value, addedAt: at });
+
+    describe("summarizeClip", () => {
+        it("collapses whitespace onto one line", () =>
+            expect(summarizeClip("a\n\n  b\tc")).toBe("a b c"));
+        it("marks blank text rather than returning an empty label", () =>
+            expect(summarizeClip("   \n ")).toBe("(blank)"));
+        it("truncates long text with an ellipsis", () => {
+            const s = summarizeClip("x".repeat(200));
+            expect(s.endsWith("…")).toBe(true);
+            expect(s.length).toBeLessThanOrEqual(73);
+        });
+    });
+
+    describe("addClip", () => {
+        it("adds to the front", () => {
+            const r = addClip([mk("old", "1")], "new", "2", 100);
+            expect(r.added).toBe(true);
+            expect(r.clips.map(c => c.value)).toEqual(["new", "old"]);
+        });
+        it("rejects whitespace-only text", () => {
+            const r = addClip([], "  \n ", "1", 0);
+            expect(r).toMatchObject({ added: false, reason: "empty" });
+            expect(r.clips).toHaveLength(0);
+        });
+        it("rejects text over the cap rather than truncating it", () => {
+            // Truncating would paste silently corrupt content later
+            const r = addClip([], "x".repeat(MAX_CLIP_CHARS + 1), "1", 0);
+            expect(r).toMatchObject({ added: false, reason: "too-long" });
+        });
+        it("accepts text exactly at the cap", () => {
+            expect(addClip([], "x".repeat(MAX_CLIP_CHARS), "1", 0).added).toBe(true);
+        });
+        it("moves a duplicate to the front instead of adding a second copy", () => {
+            const clips = [mk("a", "1"), mk("b", "2"), mk("c", "3")];
+            const r = addClip(clips, "c", "new-id", 500);
+            expect(r.clips.map(c => c.value)).toEqual(["c", "a", "b"]);
+            expect(r.clips).toHaveLength(3);
+        });
+        it("keeps the original id when de-duplicating", () => {
+            const r = addClip([mk("a", "keep-me")], "a", "fresh-id", 1);
+            expect(r.clips[0].id).toBe("keep-me");
+        });
+        it("preserves the exact value including whitespace", () => {
+            const raw = "  indented\n\tline  ";
+            expect(addClip([], raw, "1", 0).clips[0].value).toBe(raw);
+        });
+        it("enforces the collection cap, dropping the oldest", () => {
+            let clips: ClipEntry[] = [];
+            for (let i = 0; i < MAX_CLIPS + 10; i++) {
+                clips = addClip(clips, `v${i}`, `id${i}`, i).clips;
+            }
+            expect(clips).toHaveLength(MAX_CLIPS);
+            expect(clips[0].value).toBe(`v${MAX_CLIPS + 9}`);
+            expect(clips.some(c => c.value === "v0")).toBe(false);
+        });
+        it("does not mutate the input array", () => {
+            const clips = [mk("a", "1")];
+            addClip(clips, "b", "2", 0);
+            expect(clips).toHaveLength(1);
+        });
+    });
+
+    describe("removeClip", () => {
+        it("removes by id", () =>
+            expect(removeClip([mk("a", "1"), mk("b", "2")], "1").map(c => c.value)).toEqual(["b"]));
+        it("ignores unknown ids", () =>
+            expect(removeClip([mk("a", "1")], "nope")).toHaveLength(1));
+    });
+
+    describe("promoteClip", () => {
+        it("moves the entry to the front", () =>
+            expect(promoteClip([mk("a", "1"), mk("b", "2"), mk("c", "3")], "3").map(c => c.value))
+                .toEqual(["c", "a", "b"]));
+        it("returns the list unchanged for an unknown id", () =>
+            expect(promoteClip([mk("a", "1")], "nope").map(c => c.value)).toEqual(["a"]));
+    });
+});
+
+describe("isKeystrokeSafe", () => {
+    it("accepts plain ASCII", () => expect(isKeystrokeSafe("hello world 123 !@#")).toBe(true));
+    // Newlines vanish and tabs move focus under AppleScript, despite both being ASCII
+    it("rejects newlines", () => expect(isKeystrokeSafe("a\nb")).toBe(false));
+    it("rejects carriage returns", () => expect(isKeystrokeSafe("a\r\nb")).toBe(false));
+    it("rejects tabs", () => expect(isKeystrokeSafe("a\tb")).toBe(false));
+    it("rejects arrows", () => expect(isKeystrokeSafe("a → b")).toBe(false));
+    it("rejects accented letters", () => expect(isKeystrokeSafe("café")).toBe(false));
+    it("rejects em dashes", () => expect(isKeystrokeSafe("a—b")).toBe(false));
+    it("rejects emoji", () => expect(isKeystrokeSafe("party 🎉")).toBe(false));
+    it("rejects CJK", () => expect(isKeystrokeSafe("日本語")).toBe(false));
+    it("accepts an empty string", () => expect(isKeystrokeSafe("")).toBe(true));
 });
 
 describe("generateLabel", () => {

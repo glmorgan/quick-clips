@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import CoreGraphics
 
 //
 // picker-host — a minimal native window that displays the Quick Clips transform picker.
@@ -11,6 +12,10 @@ import WebKit
 //
 // It accepts Chrome's own flag spelling (`--app=<url>`, `--window-size=W,H`) so it is a
 // drop-in substitute for the browser during evaluation, with no changes to picker.ts.
+//
+// It also serves a second, unrelated purpose behind `--type-text`: typing arbitrary Unicode
+// into the frontmost app. That lives here rather than in its own binary purely so there is one
+// executable to build, sign and ship.
 //
 // Exits non-zero on a bad invocation; exits 0 when the window closes.
 //
@@ -140,16 +145,80 @@ final class PickerWindowController: NSObject, NSWindowDelegate, WKNavigationDele
     }
 }
 
+// MARK: - Unicode typing
+
+/**
+ * Types text into the frontmost application by posting Unicode directly.
+ *
+ * AppleScript's `keystroke` synthesises presses against the current keyboard layout, so any
+ * character that layout cannot produce is silently replaced — an arrow, an accented letter,
+ * CJK and emoji all arrive as "a". keyboardSetUnicodeString bypasses the layout entirely.
+ *
+ * Needs the same Accessibility permission `keystroke` already required, so it asks nothing new
+ * of the user.
+ */
+private func typeText(_ text: String) {
+    guard !text.isEmpty else { return }
+    let source = CGEventSource(stateID: .hidSystemState)
+    let units = Array(text.utf16)
+    // Chunked because keyboardSetUnicodeString silently truncates oversized payloads.
+    let chunkSize = 16
+    var index = 0
+    while index < units.count {
+        var end = min(index + chunkSize, units.count)
+        // Never split a surrogate pair across events, or an emoji arrives as two broken halves.
+        if end < units.count, units[end - 1] >= 0xD800, units[end - 1] <= 0xDBFF { end -= 1 }
+        let chunk = Array(units[index ..< end])
+        for isDown in [true, false] {
+            guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: isDown)
+            else { continue }
+            event.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+            event.post(tap: .cghidEventTap)
+        }
+        index = end
+        usleep(1500)
+    }
+    // Events are delivered asynchronously; exiting immediately drops whatever is still in
+    // flight, which silently truncates the tail of the text.
+    usleep(120_000)
+}
+
 // MARK: - entry point
 
+// Typing mode needs no window, so it must short-circuit before any AppKit setup.
+if CommandLine.arguments.contains("--type-text") {
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    typeText(String(data: data, encoding: .utf8) ?? "")
+    exit(0)
+}
+
 guard let raw = flagValue("app"), let url = URL(string: raw), url.scheme != nil else {
-    FileHandle.standardError.write("usage: picker-host --app=<url> [--window-size=W,H]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("usage: picker-host --app=<url> [--window-size=W,H]\n       picker-host --type-text   (text on stdin)\n".data(using: .utf8)!)
     exit(2)
 }
 
 let app = NSApplication.shared
 // .regular so the window can take keyboard focus for type-to-filter; the process is short-lived.
 app.setActivationPolicy(.regular)
+
+// AppKit routes the standard editing shortcuts through the Edit menu's key equivalents, so
+// without a menu bar Cmd+V, Cmd+C and Cmd+A simply do nothing — you could not paste into the
+// picker's filter field. A minimal Edit menu restores them; the menu itself is never shown
+// because the window is the only UI.
+let mainMenu = NSMenu()
+let editItem = NSMenuItem()
+mainMenu.addItem(editItem)
+let editMenu = NSMenu(title: "Edit")
+for (title, selector, key) in [
+    ("Cut", #selector(NSText.cut(_:)), "x"),
+    ("Copy", #selector(NSText.copy(_:)), "c"),
+    ("Paste", #selector(NSText.paste(_:)), "v"),
+    ("Select All", #selector(NSText.selectAll(_:)), "a"),
+] {
+    editMenu.addItem(NSMenuItem(title: title, action: selector, keyEquivalent: key))
+}
+editItem.submenu = editMenu
+app.mainMenu = mainMenu
 
 let controller = PickerWindowController()
 controller.show(url: url, contentSize: requestedContentSize())

@@ -17,6 +17,7 @@ import streamDeck from "@elgato/streamdeck";
 
 import { ClipboardSlot } from "./actions/clipboard-slot";
 import { ClipboardUtils } from "./actions/clipboard-utils";
+import { ClipboardManager } from "./actions/clipboard-manager";
 
 // When relaunched via `streamdeck restart`, process.cwd() may be the repo root
 // rather than the sdPlugin directory. The SDK uses process.cwd() to find manifest.json,
@@ -45,6 +46,7 @@ streamDeck.logger.setLevel("info");
  */
 streamDeck.actions.registerAction(new ClipboardSlot());
 streamDeck.actions.registerAction(new ClipboardUtils());
+streamDeck.actions.registerAction(new ClipboardManager());
 
 /**
  * Establish connection with the Stream Deck application.

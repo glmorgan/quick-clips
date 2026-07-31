@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+
+<head lang="en">
+    <meta charset="utf-8" />
+    <script src="sdpi-components.js"></script>
+</head>
+
+<body>
+    <sdpi-item label="Collection Name">
+        <sdpi-textfield setting="name" placeholder="e.g. Project Alpha"></sdpi-textfield>
+    </sdpi-item>
+
+    <sdpi-item label="Paste Mode">
+        <sdpi-select setting="pasteMode">
+            <option value="typing">Simulate Typing (default)</option>
+            <option value="clipboard">Clipboard Paste</option>
+        </sdpi-select>
+    </sdpi-item>
+
+    <sdpi-item label="Collection">
+        <sdpi-button id="clear">Clear All Clips</sdpi-button>
+    </sdpi-item>
+
+    <script>
+        // Matches clipboard-slot.html: talk to the plugin directly, no sdpi-delegate.
+        document.getElementById('clear').addEventListener('click', () => {
+            SDPIComponents.streamDeckClient.send('sendToPlugin', { event: 'clearCollection' });
+        });
+    </script>
+</body>
+
+</html>

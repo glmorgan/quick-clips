@@ -48,6 +48,30 @@
 					"Name": "Active"
 				}
 			]
+		},
+		{
+			"Name": "Quick Clips Manager",
+			"UUID": "com.quickclips.streamdeck.clipboard-manager",
+			"Icon": "imgs/actions/manager/icon",
+			"Tooltip": "A keyed collection of reusable snippets. Click to pick one to paste, or capture the clipboard.",
+			"PropertyInspectorPath": "ui/clipboard-manager.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/manager/empty",
+					"TitleAlignment": "bottom",
+					"FontSize": 10,
+					"Name": "Empty"
+				},
+				{
+					"Image": "imgs/actions/manager/filled",
+					"TitleAlignment": "bottom",
+					"FontSize": 10,
+					"Name": "Filled"
+				}
+			]
 		}
 	],
 	"Category": "Quick Clips",

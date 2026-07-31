@@ -30,6 +30,15 @@ This is an Elgato Stream Deck plugin built with the `@elgato/streamdeck` SDK v2.
 
 **Shared utilities:** `src/utils.ts` exports `applyTransform`, `generateLabel`, and `escapeForAppleScript` — used by both actions and covered by unit tests. All transforms are pure except `uuid`, which generates a fresh value per call.
 
+**Text output:** `src/typing.ts` owns emitting stored text, shared by all three actions — they each used to carry a copy, which is how the AppleScript backslash bug came to exist in two places. Typing tries three mechanisms in order:
+1. the bundled native helper (`bin/picker-host --type-text`, text on stdin), which posts Unicode via `CGEvent.keyboardSetUnicodeString` and is exact
+2. AppleScript `keystroke`, but **only for printable ASCII** (`\x20-\x7E`). Everything else corrupts silently, all measured: non-ASCII becomes `a` (`→ café 🎉 日本語` → `a cafa aa aaa`), **newlines vanish entirely**, and **tabs are delivered as real Tab presses** that move focus, so the remainder is typed into the wrong field
+3. borrowing the clipboard (copy, paste, restore) for anything else — silently wrong output is worse than a briefly borrowed pasteboard. Verified to preserve newlines and tabs and to restore the previous clipboard
+
+The native host installs a minimal **Edit menu**. Without it AppKit has no key equivalent for Cmd+V, so pasting into the picker's filter field silently did nothing — and the clipboard fallback could not be tested against the host at all.
+
+Smart-quote substitution is *not* fixable here: macOS curls quotes in the receiving field, which affects real typing too and varies per app. Clipboard paste mode is immune.
+
 **AppleScript escaping:** both actions build a `keystroke` script from arbitrary user text, so all interpolated text must go through `escapeForAppleScript`. AppleScript treats `\` as an escape character inside string literals — unescaped backslashes (Windows paths, regexes, escaped JSON, LaTeX) make `osascript` fail to compile, which previously surfaced as the button silently doing nothing. The helper doubles backslashes *before* escaping quotes, and converts newlines to `\n`/`\r` so the generated script stays on one line.
 
 **Actions:**

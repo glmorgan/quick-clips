@@ -24,8 +24,13 @@ export type PickerItem = {
     id: string;
     label: string;
     group: string;
-    /** Path to a PNG relative to the sdPlugin root, e.g. `imgs/actions/utils/upper`. */
-    icon: string;
+    /**
+     * Path to a PNG relative to the sdPlugin root, e.g. `imgs/actions/utils/upper`.
+     * Optional: stored clips have no per-item art.
+     */
+    icon?: string;
+    /** Secondary line under the label — the clip's text, or a generated sample. */
+    preview?: string;
     /** Hex accent used for the selected-card outline; should match the icon's own accent bar. */
     accent?: string;
 };
@@ -40,6 +45,31 @@ export type PickerOptions = {
      * setting rather than the top of the list. Unknown ids fall back to the first item.
      */
     selectedId?: string;
+    /**
+     * Rows that perform an operation instead of selecting, e.g. "Add from clipboard".
+     * Choosing one leaves the window open so the result is visible.
+     */
+    actions?: { id: string; label: string; hint?: string }[];
+    /**
+     * Handles an action row. Returns the updated item list, which the picker re-renders.
+     * Keeping this a callback leaves clipboard and settings logic in the action, not here.
+     */
+    onAction?: (actionId: string) => Promise<PickerItem[]>;
+    /**
+     * Whether the caller will type or paste immediately after a selection. When true the
+     * picker waits for the window to close *and* for focus to land back on a real app before
+     * resolving; otherwise keystrokes race the closing window. Off by default because the
+     * transform picker only writes settings.
+     */
+    awaitFocusHandoff?: boolean;
+    /**
+     * `grid` packs short labelled items into columns — right for transforms, which are terse
+     * and carry icons. `list` gives each row the full width, which long stored text needs to
+     * stay readable rather than truncating a few characters in.
+     */
+    layout?: "grid" | "list";
+    /** Placeholder for the filter field; defaults to a generic prompt. */
+    filterPlaceholder?: string;
     /** Abandon the picker and resolve `null` after this many ms. */
     timeoutMs?: number;
     /**
@@ -152,6 +182,39 @@ export async function findHosts(): Promise<string[]> {
     return hosts;
 }
 
+/**
+ * Waits until a real application is frontmost again after the picker window closes.
+ *
+ * Measured on a real click: the host exits ~19ms after the selection, but focus passes through
+ * a brief state where no app is frontmost and only lands on the previous app at ~32ms. Typing
+ * inside that gap goes nowhere, or worse into the closing window — so callers that paste must
+ * wait for the handoff rather than for the selection alone. Polls observed state instead of
+ * sleeping a guessed constant, so it still holds on a slower machine.
+ */
+async function waitForFocusHandoff(timeoutMs = 500): Promise<void> {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const run = promisify(execFile);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            const { stdout } = await run("lsappinfo", ["front"]);
+            const asn = stdout.trim();
+            if (asn) {
+                const { stdout: name } = await run("lsappinfo", ["info", "-only", "name", asn]);
+                // "[ NULL ]" is the transient no-frontmost-app state while the window closes.
+                if (name.includes("=") && !name.includes("NULL") && !name.includes("picker-host")) {
+                    return;
+                }
+            }
+        } catch {
+            // lsappinfo unavailable — do not block the paste on a diagnostic tool
+            return;
+        }
+        await new Promise(r => setTimeout(r, 20));
+    }
+}
+
 /** Escapes text for safe interpolation into an HTML text node or attribute. */
 function escapeHtml(text: string): string {
     return text
@@ -178,7 +241,8 @@ function renderHtml(
     options: Required<Pick<PickerOptions, "title">> & PickerOptions,
     theme: "auto" | "dark" | "light"
 ): string {
-    const { title, subtitle, selectedId } = options;
+    const { title, subtitle, selectedId, actions } = options;
+    const layout = options.layout ?? "grid";
 
     const groups = [...new Set(items.map(i => i.group))];
     const sections = groups.map(group => {
@@ -191,12 +255,26 @@ function renderHtml(
                 data-search="${escapeHtml((item.label + " " + item.group).toLowerCase())}"
                 ${item.id === selectedId ? 'title="Currently set on this button"' : ""}
                 style="--accent:${escapeHtml(item.accent ?? DEFAULT_ACCENT)}">
-          <img class="icon" src="/icon?t=${token}&p=${encodeURIComponent(item.icon)}" alt="" />
-          <span class="label">${escapeHtml(item.label)}</span>
+          ${item.icon ? `<img class="icon" src="/icon?t=${token}&p=${encodeURIComponent(item.icon)}" alt="" />` : ""}
+          <span class="text">
+            <span class="label">${escapeHtml(item.label)}</span>
+            ${item.preview ? `<span class="preview">${escapeHtml(item.preview)}</span>` : ""}
+          </span>
         </button>`)
             .join("");
         return `<section><h2>${escapeHtml(group)}</h2><div class="grid">${cards}</div></section>`;
     }).join("");
+
+    // Action rows come first so an empty collection still offers something to do.
+    const actionSection = (actions ?? []).length === 0 ? "" : `
+    <section><div class="grid">${(actions ?? []).map(a => `
+      <button class="card is-action" data-action="${escapeHtml(a.id)}">
+        <span class="plus">+</span>
+        <span class="text">
+          <span class="label">${escapeHtml(a.label)}</span>
+          ${a.hint ? `<span class="preview">${escapeHtml(a.hint)}</span>` : ""}
+        </span>
+      </button>`).join("")}</div></section>`;
 
     // Light tokens are declared twice: once behind the media query (the `auto` default) and
     // once behind [data-theme="light"], so an explicit override beats the OS in both directions.
@@ -217,7 +295,7 @@ function renderHtml(
       --glyph: brightness(.24) saturate(0);`;
 
     return `<!doctype html>
-<html lang="en"${theme === "auto" ? "" : ` data-theme="${theme}"`}>
+<html lang="en" data-layout="${layout}"${theme === "auto" ? "" : ` data-theme="${theme}"`}>
 <head>
 <meta charset="utf-8" />
 <title>${escapeHtml(title)}</title>
@@ -358,6 +436,8 @@ function renderHtml(
     display: grid; gap: 9px;
     grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   }
+  /* One row per item, full width — long stored text is unreadable in narrow columns. */
+  html[data-layout="list"] .grid { grid-template-columns: 1fr; gap: 7px; }
 
   .card {
     position: relative; display: flex; align-items: center; gap: 10px;
@@ -391,8 +471,23 @@ function renderHtml(
   /* Icons are shown exactly as they appear on the Stream Deck key — no tint, no container. */
   .icon { flex: 0 0 30px; width: 30px; height: 30px; object-fit: contain; display: block; filter: var(--glyph); }
 
+  .text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+  .preview {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 10.5px; color: var(--fg-dim); letter-spacing: -.01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Action rows read as "do something" rather than "pick something". */
+  .card.is-action { border-style: dashed; }
+  .card.is-action .label { color: var(--fg-dim); }
+  .card.is-action:hover, .card.is-action.active { border-style: solid; }
+  .card.is-action:hover .label, .card.is-action.active .label { color: var(--fg); }
+  .plus {
+    flex: 0 0 30px; width: 30px; height: 30px; display: grid; place-items: center;
+    border-radius: 8px; background: var(--kbd); color: var(--fg-dim); font-size: 17px;
+  }
   .label {
-    flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 550;
+    min-width: 0; font-size: 13px; font-weight: 550;
     letter-spacing: -.008em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .label mark { background: transparent; color: var(--mark); font-weight: 700; }
@@ -406,6 +501,14 @@ function renderHtml(
     display: inline-grid; place-items: center; min-width: 17px; height: 17px; padding: 0 4px;
     background: var(--kbd); border-radius: 4px; font: inherit; font-size: 10px; color: var(--fg-dim);
   }
+
+  #notice {
+    position: fixed; left: 50%; bottom: 52px; transform: translateX(-50%) translateY(8px);
+    background: var(--card); border: 2px solid var(--card-line); border-radius: 9px;
+    padding: 8px 14px; font-size: 12px; color: var(--fg);
+    opacity: 0; pointer-events: none; transition: opacity 140ms ease, transform 140ms ease;
+  }
+  #notice.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
   #empty { display: none; padding: 52px 16px; text-align: center; }
   #empty.show { display: block; }
@@ -425,7 +528,7 @@ function renderHtml(
         <circle cx="7" cy="7" r="4.75" stroke="currentColor" stroke-width="1.5"/>
         <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
       </svg>
-      <input id="q" type="text" placeholder="Filter transforms…" autocomplete="off"
+      <input id="q" type="text" placeholder="${escapeHtml(options.filterPlaceholder ?? "Filter…")}" autocomplete="off"
              spellcheck="false" autofocus role="combobox" aria-expanded="true" />
       <span id="count"></span>
     </div>
@@ -433,6 +536,7 @@ function renderHtml(
 </header>
 <main role="listbox">
   <div class="wrap">
+    ${actionSection}
     ${sections}
     <div id="empty">
       <div class="big">No matching transform</div>
@@ -440,6 +544,7 @@ function renderHtml(
     </div>
   </div>
 </main>
+<div id="notice"></div>
 <footer>
   <div class="wrap">
     <span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> navigate</span>
@@ -525,12 +630,36 @@ function renderHtml(
     if (sent) return;
     sent = true;
     // keepalive lets the request survive the window closing underneath it
-    fetch('/select?t=' + encodeURIComponent(TOKEN), {
+    fetch('/message?t=' + encodeURIComponent(TOKEN), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: id }),
+      body: JSON.stringify({ type: 'select', id: id }),
       keepalive: true
     }).catch(function () {}).then(function () { window.close(); });
+  }
+
+  /**
+   * Action rows mutate the list rather than choosing from it, so the window stays open.
+   * Reloading re-renders server-side, which avoids maintaining a second copy of the card
+   * markup in JS; the page is local so the reload is imperceptible.
+   */
+  function runAction(actionId) {
+    if (sent) return;
+    fetch('/message?t=' + encodeURIComponent(TOKEN), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'action', action: actionId })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res && res.message) { showNotice(res.message); }
+      else { location.reload(); }
+    }).catch(function () {});
+  }
+
+  function showNotice(text) {
+    var el = document.getElementById('notice');
+    el.textContent = text;
+    el.classList.add('show');
+    setTimeout(function () { el.classList.remove('show'); }, 2600);
   }
 
   q.addEventListener('input', function () {
@@ -551,12 +680,21 @@ function renderHtml(
     else if (e.key === 'ArrowUp') { e.preventDefault(); moveVertical(-1); }
     else if (e.key === 'Home') { e.preventDefault(); active = 0; paint(); }
     else if (e.key === 'End') { e.preventDefault(); active = vis.length - 1; paint(); }
-    else if (e.key === 'Enter') { e.preventDefault(); if (vis[active]) send(vis[active].dataset.id); }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      var card = vis[active];
+      if (!card) return;
+      if (card.dataset.action) { runAction(card.dataset.action); return; }
+      send(card.dataset.id);
+    }
     else if (e.key === 'Escape') { e.preventDefault(); send(null); }
   });
 
   cards.forEach(function (card) {
-    card.addEventListener('click', function () { send(card.dataset.id); });
+    card.addEventListener('click', function () {
+      if (card.dataset.action) { runAction(card.dataset.action); return; }
+      send(card.dataset.id);
+    });
     card.addEventListener('mousemove', function () {
       var at = visible().indexOf(card);
       if (at !== -1 && at !== active) { active = at; paint(); }
@@ -594,8 +732,10 @@ export async function showPicker(
     const token = randomBytes(16).toString("hex");
     const title = options.title ?? "Choose transform";
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const html = renderHtml(items, token, { ...options, title }, options.theme ?? "dark");
-    const allowedIcons = new Set(items.map(i => i.icon));
+    let currentItems = items;
+    let html = renderHtml(currentItems, token, { ...options, title }, options.theme ?? "dark");
+    // Recomputed on every action, since a new item may reference an icon the old set lacked.
+    let allowedIcons = new Set(currentItems.map(i => i.icon).filter((p): p is string => !!p));
     const warn = options.onWarn ?? (() => { /* caller opted out of diagnostics */ });
 
     return new Promise<string | null>((resolve, reject) => {
@@ -615,7 +755,13 @@ export async function showPicker(
             server.close();
             // The app window owns no other tabs, so terminating it is safe.
             child?.kill();
-            resolve(result);
+
+            // Only a real selection is followed by typing, so only that needs the handoff wait.
+            if (result === null || !options.awaitFocusHandoff) {
+                resolve(result);
+                return;
+            }
+            waitForFocusHandoff().then(() => resolve(result), () => resolve(result));
         }
 
         /** A host that never displayed anything — the caller should try the next one. */
@@ -673,20 +819,54 @@ export async function showPicker(
                 return;
             }
 
-            if (url.pathname === "/select" && req.method === "POST") {
+            if (url.pathname === "/message" && req.method === "POST") {
                 let body = "";
                 req.on("data", chunk => { body += chunk; });
                 req.on("end", () => {
-                    res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
-                    let id: string | null = null;
+                    let parsed: { type?: unknown; id?: unknown; action?: unknown };
                     try {
-                        const parsed = JSON.parse(body) as { id?: unknown };
-                        if (typeof parsed.id === "string" && items.some(i => i.id === parsed.id)) {
-                            id = parsed.id;
-                        }
+                        parsed = JSON.parse(body);
                     } catch {
-                        // malformed body — treat as a cancel
+                        // malformed body — treat as a cancel rather than guessing intent
+                        res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                        finish(null);
+                        return;
                     }
+
+                    // An action mutates the list and leaves the window open.
+                    if (parsed.type === "action" && typeof parsed.action === "string") {
+                        const handler = options.onAction;
+                        if (!handler) {
+                            res.writeHead(200, { "Content-Type": "application/json" })
+                                .end(JSON.stringify({ message: "Not supported" }));
+                            return;
+                        }
+                        handler(parsed.action)
+                            .then(updated => {
+                                currentItems = updated;
+                                allowedIcons = new Set(
+                                    updated.map(i => i.icon).filter((p): p is string => !!p)
+                                );
+                                html = renderHtml(
+                                    currentItems, token, { ...options, title }, options.theme ?? "dark"
+                                );
+                                res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                            })
+                            .catch((error: unknown) => {
+                                // Report in the window instead of closing it — losing the picker on
+                                // a failed add would be a worse outcome than an inline message.
+                                const message = error instanceof Error ? error.message : "Failed";
+                                warn(`picker action "${parsed.action as string}" failed: ${message}`);
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ message }));
+                            });
+                        return;
+                    }
+
+                    res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                    const id = typeof parsed.id === "string" && currentItems.some(i => i.id === parsed.id)
+                        ? parsed.id
+                        : null;
                     finish(id);
                 });
                 return;

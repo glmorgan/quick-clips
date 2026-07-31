@@ -99,6 +99,80 @@ export function escapeForAppleScript(text: string): string {
         .replace(/\n/g, '\\n');
 }
 
+/** A single stored clip inside a Quick Clips Manager collection. */
+export type ClipEntry = {
+    /** Stable id, so reordering never invalidates a pending selection. */
+    id: string;
+    /** One-line summary shown in the picker. */
+    label: string;
+    /** The exact text, preserved verbatim including whitespace. */
+    value: string;
+    addedAt: number;
+};
+
+/**
+ * Caps on a collection. Settings are JSON persisted into the Stream Deck profile, so an
+ * unbounded collection would bloat it; these keep a profile a sane size while being far
+ * larger than the handful of entries a project realistically needs.
+ */
+export const MAX_CLIPS = 50;
+export const MAX_CLIP_CHARS = 10_000;
+const SUMMARY_MAX_CHARS = 72;
+
+/**
+ * Renders a clip as a single line for the picker.
+ *
+ * Distinct from {@link generateLabel}, which targets a 7-character Stream Deck key title;
+ * the picker has far more room, and collapsing newlines matters more than fitting a key.
+ */
+export function summarizeClip(value: string): string {
+    const flat = value.replace(/\s+/g, " ").trim();
+    if (flat === "") return "(blank)";
+    return flat.length > SUMMARY_MAX_CHARS ? `${flat.slice(0, SUMMARY_MAX_CHARS)}…` : flat;
+}
+
+/**
+ * Returns a new collection with `value` added, newest first.
+ *
+ * Adding text already present moves the existing entry to the top rather than creating a
+ * duplicate, so repeatedly grabbing the same snippet keeps it handy instead of filling the
+ * list. Whitespace-only input is rejected — capturing an accidental empty clipboard is never
+ * intended. Over-long text is refused rather than truncated, since a silently clipped snippet
+ * would paste corrupt content.
+ */
+export function addClip(
+    clips: readonly ClipEntry[],
+    value: string,
+    id: string,
+    now: number
+): { clips: ClipEntry[]; added: boolean; reason?: "empty" | "too-long" } {
+    if (value.trim() === "") return { clips: [...clips], added: false, reason: "empty" };
+    if (value.length > MAX_CLIP_CHARS) return { clips: [...clips], added: false, reason: "too-long" };
+
+    const existing = clips.find(c => c.value === value);
+    const rest = clips.filter(c => c.value !== value);
+    const entry: ClipEntry = existing
+        ? { ...existing, label: summarizeClip(value) }
+        : { id, label: summarizeClip(value), value, addedAt: now };
+
+    return { clips: [entry, ...rest].slice(0, MAX_CLIPS), added: true };
+}
+
+/** Returns a new collection without the given id. */
+export function removeClip(clips: readonly ClipEntry[], id: string): ClipEntry[] {
+    return clips.filter(c => c.id !== id);
+}
+
+/**
+ * Moves a clip to the front, so what gets used most stays reachable without any pinning UI.
+ * Unknown ids are returned unchanged rather than throwing.
+ */
+export function promoteClip(clips: readonly ClipEntry[], id: string): ClipEntry[] {
+    const found = clips.find(c => c.id === id);
+    if (!found) return [...clips];
+    return [found, ...clips.filter(c => c.id !== id)];
+}
+
 export function generateLabel(text: string): string {
     const cleanText = text.replace(/\s+/g, ' ').trim();
     const maxCharsPerLine = 7;
