@@ -1,5 +1,5 @@
 import {
-    action, KeyUpEvent, SingletonAction, WillAppearEvent,
+    action, KeyDownEvent, KeyUpEvent, SingletonAction, WillAppearEvent, WillDisappearEvent,
     DidReceiveSettingsEvent, SendToPluginEvent, streamDeck,
 } from "@elgato/streamdeck";
 import { randomUUID } from "node:crypto";
@@ -12,6 +12,9 @@ import { outputText, readClipboard } from "../typing.js";
 
 /** Id of the picker row that captures the current clipboard. Not a clip id. */
 const ADD_ACTION = "add-from-clipboard";
+
+/** Hold duration that turns a press into a capture. Matches the other two actions. */
+const LONG_PRESS_THRESHOLD = 1000;
 
 /**
  * Badge shown for each detected clip shape. Colours reuse the palette the transform icons
@@ -60,7 +63,9 @@ type ManagerSettings = {
  * Quick Clip keys.
  *
  * A short press opens the picker, which both lists the collection and offers to capture
- * whatever is currently on the clipboard. There is deliberately no hold gesture.
+ * whatever is currently on the clipboard. A hold captures it directly, without the window —
+ * the same operation the picker's action row performs, for the common case where you have just
+ * copied something and only want it filed.
  *
  * @platform macOS — pbpaste/pbcopy for clipboard access, osascript to type or paste.
  */
@@ -74,6 +79,12 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
      * two different collection buttons can still each open their own.
      */
     private open = new Set<string>();
+
+    /**
+     * Per-button hold state, mirroring the other two actions: the timer marks the gesture as a
+     * hold and the work happens on release, so the key can show what releasing will do.
+     */
+    private holdTrackers = new Map<string, { timer: NodeJS.Timeout | null; captureMode: boolean }>();
 
     private toPickerItems(clips: ClipEntry[]): PickerItem[] {
         return clips.map(clip => {
@@ -108,6 +119,12 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
             // Second line carries the count so a glance shows whether a collection has anything.
             await ev.action.setTitle(name ? `${name}\n${count}` : (count ? `${count} clips` : "Empty"));
         }
+        // Drops any image the hold gesture put there, so the key goes back to its state artwork.
+        // Done here rather than only on the capture path because every route out of a hold ends
+        // in updateDisplay, and a stuck override would otherwise survive until the key reappears.
+        if ("setImage" in ev.action && typeof ev.action.setImage === "function") {
+            await ev.action.setImage();
+        }
         if ("setState" in ev.action && typeof ev.action.setState === "function") {
             await ev.action.setState(count > 0 ? 1 : 0);
         }
@@ -135,19 +152,93 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
         await this.updateDisplay(ev, cleared);
     }
 
+    override async onKeyDown(ev: KeyDownEvent<ManagerSettings>): Promise<void> {
+        const contextId = ev.action.id;
+        // Nothing to arm while the picker owns this button: the release is ignored either way,
+        // and arming would flash the hold prompt onto the key for no reason.
+        if (this.open.has(contextId)) return;
+        const existing = this.holdTrackers.get(contextId);
+        if (existing?.timer) clearTimeout(existing.timer);
+
+        const tracker = {
+            timer: setTimeout(async () => {
+                tracker.captureMode = true;
+                // Both the title and the image change. The title alone was not enough: it is two
+                // lines of small text that only show for however long the key is held past the
+                // threshold, which is easy to miss entirely when the icon stays put. Unlike
+                // hold-to-clear on a Quick Clip there is nothing to lose by following through,
+                // so this reads as a label rather than a warning.
+                await ev.action.setTitle("Release\nto Add");
+                await ev.action.setImage("imgs/actions/manager/release-to-add.png");
+                streamDeck.logger.info("Hold threshold reached; releasing will capture");
+            }, LONG_PRESS_THRESHOLD),
+            captureMode: false,
+        };
+        this.holdTrackers.set(contextId, tracker);
+    }
+
+    override onWillDisappear(ev: WillDisappearEvent<ManagerSettings>): void {
+        const tracker = this.holdTrackers.get(ev.action.id);
+        if (tracker?.timer) clearTimeout(tracker.timer);
+        this.holdTrackers.delete(ev.action.id);
+    }
+
     override async onKeyUp(ev: KeyUpEvent<ManagerSettings>): Promise<void> {
-        if (this.open.has(ev.action.id)) {
-            // Already showing for this button — a second window would be confusing and would
-            // race the first one's writes.
+        const contextId = ev.action.id;
+        const tracker = this.holdTrackers.get(contextId);
+        this.holdTrackers.delete(contextId);
+        if (tracker?.timer) clearTimeout(tracker.timer);
+
+        if (this.open.has(contextId)) {
+            // Already showing for this button. This guards the hold as well as the press: the
+            // open picker holds the collection in a closure and writes it back on its next
+            // mutation, so a capture from the key would be silently clobbered.
             streamDeck.logger.info("Picker already open for this button; ignoring the press");
+            // The hold may have replaced the title with its prompt; put the real one back.
+            if (tracker?.captureMode) await this.updateDisplay(ev, await ev.action.getSettings());
             return;
         }
-        this.open.add(ev.action.id);
+
+        if (tracker?.captureMode) {
+            await this.captureFromKey(ev);
+            return;
+        }
+
+        this.open.add(contextId);
         try {
             await this.handleKeyUp(ev);
         } finally {
-            this.open.delete(ev.action.id);
+            this.open.delete(contextId);
         }
+    }
+
+    /**
+     * Hold-to-add: stores the clipboard without opening the picker.
+     *
+     * Deliberately not suppressible the way hold-to-clear is on a Quick Clip. That setting exists
+     * because an accidental clear destroys the only copy of something; an accidental capture just
+     * files one clip too many, which the picker can undo in a click.
+     */
+    private async captureFromKey(ev: KeyUpEvent<ManagerSettings>): Promise<void> {
+        const settings = await ev.action.getSettings();
+        const text = await readClipboard().catch(() => "");
+        const result = addClip(settings.clips ?? [], text, randomUUID(), Date.now());
+
+        if (!result.added) {
+            streamDeck.logger.warn(`Hold-to-add refused the clipboard: ${result.reason}`);
+            // Restored before the alert, so the key does not sit on the hold prompt afterwards.
+            await this.updateDisplay(ev, settings);
+            await ev.action.showAlert();
+            return;
+        }
+
+        const updated: ManagerSettings = { ...settings, clips: result.clips };
+        await ev.action.setSettings(updated);
+        // setSettings from the plugin side does not raise onDidReceiveSettings.
+        await this.updateDisplay(ev, updated);
+        // The count on the key going up is the confirmation; this is the acknowledgement that
+        // the press landed at all, since nothing else opens.
+        await ev.action.showOk();
     }
 
     private async handleKeyUp(ev: KeyUpEvent<ManagerSettings>): Promise<void> {

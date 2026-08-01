@@ -593,6 +593,21 @@ function renderHtml(
   .card.hidden { display: none; }
   .card:hover { background: var(--hover); }
   /*
+   * A deleted row collapses rather than vanishing, so the rows below slide up instead of
+   * jumping. Everything that occupies vertical space has to go with it — padding and border as
+   * well as height — or the row leaves a 20px ghost behind. The 5px grid gap is the exception;
+   * it cannot be reached from here and snaps closed at the end, which at 5px is imperceptible.
+   *
+   * The height itself is driven inline from JS, because it has to start from a measured pixel
+   * value: auto does not transition. Pointer events are dropped so a row on its way out cannot
+   * be clicked; it has already left the card list, so nothing else can reach it either.
+   */
+  .card.leaving {
+    overflow: hidden; opacity: 0; pointer-events: none;
+    padding-top: 0; padding-bottom: 0; border-top-width: 0; border-bottom-width: 0;
+    transition: height 150ms ease, padding 150ms ease, border-width 150ms ease, opacity 110ms ease;
+  }
+  /*
    * Marks the transform the button is already set to. Stays in the item's accent colour
    * regardless of cursor position — the selection ring moves as you navigate, so this is the
    * only persistent way to find the current setting after arrowing around.
@@ -976,6 +991,37 @@ function renderHtml(
     }).catch(function () {});
   }
 
+  /**
+   * Plays a row out and then removes it.
+   *
+   * Purely cosmetic: the caller has already dropped the card from the card list, so as far as
+   * navigation, filtering and the active index are concerned the row is gone the moment the
+   * delete succeeds. Only its pixels are still on screen.
+   */
+  function collapseAndRemove(card) {
+    function drop() { if (card.parentNode) { card.parentNode.removeChild(card); } }
+    // Nothing decorative for anyone who has asked the system for less motion.
+    if (!card || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { drop(); return; }
+
+    // Stop it glowing on the way out if it happened to be the highlighted row.
+    card.classList.remove('active');
+    card.style.height = card.offsetHeight + 'px';
+    // Forces layout so the measured height is the transition's start value; without this the
+    // browser coalesces both writes and the row disappears instantly.
+    void card.offsetHeight;
+    card.classList.add('leaving');
+    card.style.height = '0px';
+
+    var done = false;
+    function finish() { if (done) return; done = true; drop(); }
+    card.addEventListener('transitionend', function (e) {
+      if (e.propertyName === 'height') finish();
+    });
+    // transitionend does not arrive if the window is occluded while the row plays out, which
+    // would strand a collapsed but still-present node in the list.
+    setTimeout(finish, 400);
+  }
+
   /** Removes an item, keeping the window open so the list can be worked through. */
   function runDelete(itemId) {
     if (sent) return;
@@ -994,8 +1040,10 @@ function renderHtml(
       // Where the row sat, so the highlight can stay put instead of jumping to the top of the
       // list — which lands on a row the pointer never touched and reads as a phantom hover.
       var wasAt = card ? visible().indexOf(card) : -1;
-      if (card && card.parentNode) { card.parentNode.removeChild(card); }
+      // Dropped from the card list first, so the row stops existing for navigation and
+      // filtering at once and only its collapse lags behind.
       cards = cards.filter(function (c) { return c !== card; });
+      if (card) { collapseAndRemove(card); }
 
       var after = visible();
       if (wasAt === -1 || after.length === 0) {
