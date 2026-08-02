@@ -22,6 +22,10 @@ const execAsync = promisify(exec);
  *
  * Silently wrong output is worse than a briefly borrowed clipboard, hence (3) over (2) for
  * non-ASCII text when the helper is unavailable.
+ *
+ * Which mechanism is used is separate from which *mode* the caller asks for. The default mode,
+ * `auto`, sends single-line text as keystrokes and anything containing newlines or tabs through
+ * the clipboard — see {@link needsExactPaste}.
  */
 
 /** Native helper, relative to the sdPlugin root. Absent unless `npm run build:native` has run. */
@@ -44,7 +48,37 @@ const PASTE_SETTLE_MS = 220;
  */
 const CLIPBOARD_ENV = { ...process.env, LC_ALL: "en_US.UTF-8", LC_CTYPE: "UTF-8" };
 
-export type PasteMode = "typing" | "clipboard";
+export type PasteMode = "typing" | "clipboard" | "auto";
+
+/**
+ * True when typing the text would be reinterpreted rather than inserted.
+ *
+ * Return and Tab are keys before they are characters: Return triggers auto-indent in an editor
+ * and submits a form, Tab moves focus, indents, or fires completion. Simulated typing is
+ * indistinguishable from a human at the keyboard, so the receiving app applies all of it — which
+ * is how a multi-line JSON object arrives with its indentation compounded and its brackets
+ * doubled, while the same text pasted lands intact.
+ *
+ * Measured: the same JSON typed into a plain textarea, which has none of that machinery, arrives
+ * byte-identical. The transformation belongs to the destination, not to how the text is sent.
+ *
+ * Deliberately only these two. Editors also auto-close brackets and quotes on a single line, but
+ * that varies per app and per language, and guessing at it would make the mode unpredictable.
+ */
+export function needsExactPaste(text: string): boolean {
+    return /[\n\r\t]/.test(text);
+}
+
+/**
+ * Resolves `auto` against the text at hand. An explicit choice is always honoured.
+ */
+export function resolvePasteMode(
+    mode: PasteMode | undefined,
+    text: string
+): "typing" | "clipboard" {
+    if (mode === "typing" || mode === "clipboard") return mode;
+    return needsExactPaste(text) ? "clipboard" : "typing";
+}
 
 /**
  * True when every character survives AppleScript's `keystroke` intact.
@@ -130,7 +164,10 @@ async function typeViaAppleScript(text: string): Promise<void> {
  * Restoration is best-effort and text-only: a clipboard holding an image or rich content comes
  * back as whatever `pbpaste` could render, so this is a fallback rather than a default.
  */
-async function typeViaBorrowedClipboard(text: string): Promise<void> {
+async function typeViaBorrowedClipboard(
+    text: string,
+    onWarn?: (message: string) => void
+): Promise<void> {
     let previous: string | null = null;
     try {
         previous = await readClipboard();
@@ -141,7 +178,12 @@ async function typeViaBorrowedClipboard(text: string): Promise<void> {
     await pressCommandV();
     if (previous !== null) {
         await new Promise(r => setTimeout(r, PASTE_SETTLE_MS));
-        await writeClipboard(previous).catch(() => { /* leave the pasted text rather than fail */ });
+        await writeClipboard(previous).catch((error: unknown) => {
+            // Worth saying out loud: the paste succeeded but the user's clipboard is now the
+            // pasted text rather than what they had. Silently swallowing this left someone with
+            // a changed clipboard and no way to find out why.
+            onWarn?.(`pasted, but could not restore the previous clipboard: ${String(error)}`);
+        });
     }
 }
 
@@ -153,13 +195,24 @@ async function typeViaBorrowedClipboard(text: string): Promise<void> {
  */
 export async function outputText(
     text: string,
-    mode: PasteMode,
+    mode: PasteMode | undefined,
     onWarn?: (message: string) => void
 ): Promise<void> {
-    if (mode === "clipboard") {
-        // The user opted into using the clipboard, so leave the text on it.
-        await writeClipboard(text);
-        await pressCommandV();
+    const resolved = resolvePasteMode(mode, text);
+
+    if (resolved === "clipboard") {
+        if (mode === "clipboard") {
+            // An explicit choice: the user opted into the clipboard, so leave the text on it.
+            await writeClipboard(text);
+            await pressCommandV();
+        } else {
+            // Chosen for them by `auto`. Borrow the pasteboard and put back what was there,
+            // since replacing it is a side effect nobody asked for.
+            //
+            // Deliberately not reported: this is the default mode working as designed, and a
+            // warning on every multi-line paste would bury the ones that mean something.
+            await typeViaBorrowedClipboard(text, onWarn);
+        }
         return;
     }
 
@@ -180,5 +233,5 @@ export async function outputText(
 
     onWarn?.("text contains characters AppleScript cannot type (non-ASCII, newlines or tabs) " +
              "and no native helper is available; pasting via the clipboard and restoring it");
-    await typeViaBorrowedClipboard(text);
+    await typeViaBorrowedClipboard(text, onWarn);
 }

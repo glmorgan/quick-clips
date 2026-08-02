@@ -1,6 +1,6 @@
 import { action, KeyDownEvent, KeyUpEvent, SingletonAction, WillAppearEvent, WillDisappearEvent, DidReceiveSettingsEvent, SendToPluginEvent, streamDeck } from "@elgato/streamdeck";
 import { generateLabel } from "../utils.js";
-import { outputText, readClipboard } from "../typing.js";
+import { outputText, readClipboard, type PasteMode } from "../typing.js";
 import { exec } from "child_process";
 import { promisify } from "util";
 
@@ -148,7 +148,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     override async onWillAppear(ev: WillAppearEvent<SlotSettings>): Promise<void> {
         const settings = await ev.action.getSettings();
         if (settings.pasteMode === undefined) {
-            await ev.action.setSettings({ ...settings, pasteMode: 'typing' });
+            await ev.action.setSettings({ ...settings, pasteMode: 'auto' });
         }
         await this.updateDisplay(ev, settings);
     }
@@ -314,7 +314,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     private async handleClick(ev: KeyUpEvent<SlotSettings>, settings: SlotSettings): Promise<void> {
         if (settings.value) {
             try {
-                await outputText(settings.value, settings.pasteMode ?? 'typing',
+                await outputText(settings.value, settings.pasteMode,
                     m => streamDeck.logger.warn(m));
             } catch (error) {
                 streamDeck.logger.error("Failed to output stored text:", error);
@@ -392,5 +392,5 @@ type SlotSettings = {
     suppressClear?: boolean;
 
     /** How to output stored text on paste: simulate typing (default) or clipboard paste */
-    pasteMode?: 'typing' | 'clipboard';
+    pasteMode?: PasteMode;
 };

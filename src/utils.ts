@@ -122,6 +122,12 @@ export type ClipEntry = {
     /** The exact text, preserved verbatim including whitespace. */
     value: string;
     addedAt: number;
+    /**
+     * When the clip was last pasted. Recorded but never used for ordering — the list keeps a
+     * stable position for every clip so numbered shortcuts and muscle memory stay valid. This
+     * exists only so the cap evicts the clip nobody uses rather than merely the oldest one.
+     */
+    lastUsedAt?: number;
 };
 
 /**
@@ -277,7 +283,38 @@ export function addClip(
         ? { ...existing, label: summarizeClip(value) }
         : { id, label: summarizeClip(value), value, addedAt: now };
 
-    return { clips: [entry, ...rest].slice(0, MAX_CLIPS), added: true };
+    const combined = [entry, ...rest];
+    if (combined.length <= MAX_CLIPS) return { clips: combined, added: true };
+
+    // Over the cap. Dropping the tail would discard by age alone, so a clip stored first and
+    // pasted daily would go before one added later and never touched. Position no longer tracks
+    // use, so the least-recently-used entry has to be found rather than read off the end. The
+    // clip just captured is never a candidate.
+    let victim = 1;
+    for (let i = 2; i < combined.length; i++) {
+        if (lastTouched(combined[i]) <= lastTouched(combined[victim])) victim = i;
+    }
+    return { clips: combined.filter((_, i) => i !== victim), added: true };
+}
+
+/** When a clip was last pasted, falling back to when it was captured. */
+function lastTouched(clip: ClipEntry): number {
+    return clip.lastUsedAt ?? clip.addedAt;
+}
+
+/**
+ * Records that a clip was pasted, leaving the collection's order alone.
+ *
+ * Using a clip deliberately does not move it. The list is a curated set of references rather
+ * than a history, so a stable position is what makes it learnable — and the numbered shortcuts
+ * would otherwise mean something different after every paste.
+ */
+export function markClipUsed(
+    clips: readonly ClipEntry[],
+    id: string,
+    now: number
+): ClipEntry[] {
+    return clips.map(c => (c.id === id ? { ...c, lastUsedAt: now } : c));
 }
 
 /**
@@ -285,8 +322,8 @@ export function addClip(
  *
  * The stored label is regenerated from the new text, because it is a cached summary rather than
  * something the user maintains; leaving it would show the old contents in the list. Position,
- * id, capture time and masking all survive — editing is a correction, not a re-capture, so it
- * should not reorder a list ordered by use.
+ * id, capture time and masking all survive — editing a clip is a correction, and nothing about
+ * it should move the clip.
  *
  * Refuses instead of silently breaking an invariant: `duplicate` when another clip already holds
  * that exact text, which {@link addClip} otherwise guarantees cannot happen, and the same empty
@@ -407,9 +444,8 @@ export function removeClip(clips: readonly ClipEntry[], id: string): ClipEntry[]
  *
  * Restores by position rather than to the front. Deleting is a single click on a small target
  * with no confirmation, so the common undo is taking back a misaimed one — and that should
- * leave the collection exactly as it was. Promoting the clip instead would quietly reorder a
- * list whose order the user builds by using it. The index is clamped, since adds and deletes
- * may have moved things in the meantime.
+ * leave the collection exactly as it was. The index is clamped, since adds and deletes may have
+ * moved things in the meantime.
  *
  * Refuses rather than forcing the entry in, so an undo can never destroy something else:
  * `duplicate` when the value is already back (a second undo, or the same text re-captured),
@@ -429,16 +465,6 @@ export function restoreClip(
     const next = [...clips];
     next.splice(Math.max(0, Math.min(index, clips.length)), 0, clip);
     return { clips: next, restored: true };
-}
-
-/**
- * Moves a clip to the front, so what gets used most stays reachable without any pinning UI.
- * Unknown ids are returned unchanged rather than throwing.
- */
-export function promoteClip(clips: readonly ClipEntry[], id: string): ClipEntry[] {
-    const found = clips.find(c => c.id === id);
-    if (!found) return [...clips];
-    return [found, ...clips.filter(c => c.id !== id)];
 }
 
 export function generateLabel(text: string): string {

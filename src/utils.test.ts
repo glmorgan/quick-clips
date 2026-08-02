@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
     addClip, applyTransform, escapeForAppleScript, generateLabel, isGenerator,
-    promoteClip, removeClip, restoreClip, updateClip, clipDisplayName, clipRowText, clipSearchText,
+    markClipUsed, removeClip, restoreClip, updateClip, clipDisplayName, clipRowText, clipSearchText,
     toggleClipHidden, splitUrl,
     summarizeClip, detectClipKind,
     MAX_CLIPS, MAX_CLIP_CHARS, type ClipEntry,
 } from "./utils.js";
-import { isKeystrokeSafe } from "./typing.js";
+import { isKeystrokeSafe, needsExactPaste, resolvePasteMode } from "./typing.js";
 
 /** Title-only edit, for tests that only care about naming. */
 const retitle = (clips: ClipEntry[], id: string, title: string): ClipEntry[] =>
@@ -656,12 +656,68 @@ describe("clip collections", () => {
         });
     });
 
-    describe("promoteClip", () => {
-        it("moves the entry to the front", () =>
-            expect(promoteClip([mk("a", "1"), mk("b", "2"), mk("c", "3")], "3").map(c => c.value))
-                .toEqual(["c", "a", "b"]));
-        it("returns the list unchanged for an unknown id", () =>
-            expect(promoteClip([mk("a", "1")], "nope").map(c => c.value)).toEqual(["a"]));
+    describe("markClipUsed", () => {
+        it("records the time without moving the clip", () => {
+            const clips = [mk("a", "1"), mk("b", "2"), mk("c", "3")];
+            const after = markClipUsed(clips, "3", 999);
+            expect(after.map(c => c.id)).toEqual(["1", "2", "3"]);
+            expect(after[2].lastUsedAt).toBe(999);
+        });
+        it("leaves the other clips untouched", () => {
+            const after = markClipUsed([mk("a", "1"), mk("b", "2")], "1", 5);
+            expect(after[1].lastUsedAt).toBeUndefined();
+        });
+        it("ignores unknown ids", () =>
+            expect(markClipUsed([mk("a", "1")], "nope", 5)[0].lastUsedAt).toBeUndefined());
+        it("does not mutate the input", () => {
+            const clips = [mk("a", "1")];
+            markClipUsed(clips, "1", 5);
+            expect(clips[0].lastUsedAt).toBeUndefined();
+        });
+    });
+
+    describe("markClipUsed and re-capture", () => {
+        it("keeps the usage time when the same text is captured again", () => {
+            // The dedupe path rebuilds the entry, which is where the field could quietly be lost
+            const used = markClipUsed(addClip([], "shared", "id1", 1).clips, "id1", 5_000);
+            const again = addClip(used, "shared", "id2", 9_000);
+            expect(again.clips).toHaveLength(1);
+            expect(again.clips[0].id).toBe("id1");
+            expect(again.clips[0].lastUsedAt).toBe(5_000);
+        });
+    });
+
+    describe("eviction at the cap", () => {
+        /** A full collection, oldest-added last, where the oldest-added is also the most used. */
+        const full = (): ClipEntry[] => {
+            let clips: ClipEntry[] = [];
+            for (let i = 0; i < MAX_CLIPS; i++) clips = addClip(clips, `v${i}`, `id${i}`, i).clips;
+            return clips;
+        };
+        it("drops the least recently used, not merely the oldest", () => {
+            // id0 was added first but is used constantly; id1 was added next and never touched.
+            const clips = markClipUsed(full(), "id0", 10_000);
+            const after = addClip(clips, "fresh", "new", 99_999).clips;
+            expect(after).toHaveLength(MAX_CLIPS);
+            expect(after.some(c => c.id === "id0")).toBe(true);
+            expect(after.some(c => c.id === "id1")).toBe(false);
+        });
+        it("falls back to capture time for clips never pasted", () => {
+            const after = addClip(full(), "fresh", "new", 99_999).clips;
+            // Nothing has a lastUsedAt, so the earliest captured goes
+            expect(after.some(c => c.id === "id0")).toBe(false);
+            expect(after.some(c => c.id === "id1")).toBe(true);
+        });
+        it("never evicts the clip just captured", () => {
+            const after = addClip(full(), "fresh", "new", 0).clips;
+            expect(after[0].value).toBe("fresh");
+        });
+        it("keeps every surviving clip in its existing position", () => {
+            const before = markClipUsed(full(), "id0", 10_000);
+            const after = addClip(before, "fresh", "new", 99_999).clips;
+            const survivors = before.filter(c => c.id !== "id1").map(c => c.id);
+            expect(after.slice(1).map(c => c.id)).toEqual(survivors);
+        });
     });
 });
 
@@ -692,4 +748,38 @@ describe("generateLabel", () => {
         expect(lines[0].length).toBeLessThanOrEqual(7);
     });
     it("collapses whitespace", () => expect(generateLabel("  hello   world  ")).toBe("hello\nworld"));
+});
+
+describe("paste mode", () => {
+    describe("needsExactPaste", () => {
+        it("is false for ordinary one-line text", () =>
+            expect(needsExactPaste("postgres://user:pw@localhost:5432/appdb")).toBe(false));
+        it("is false for single-line JSON", () =>
+            expect(needsExactPaste('{"a":1,"b":[2,3]}')).toBe(false));
+        it("is false for text with unicode, which types fine", () =>
+            expect(needsExactPaste("café 🎉 日本語")).toBe(false));
+        // Return and Tab are keys before they are characters
+        it("is true for a newline", () => expect(needsExactPaste("line one\nline two")).toBe(true));
+        it("is true for a carriage return", () => expect(needsExactPaste("a\r\nb")).toBe(true));
+        it("is true for a tab", () => expect(needsExactPaste("key\tvalue")).toBe(true));
+        it("is true for pretty-printed JSON", () =>
+            expect(needsExactPaste('{\n  "a": 1\n}')).toBe(true));
+        it("is false for empty text", () => expect(needsExactPaste("")).toBe(false));
+    });
+
+    describe("resolvePasteMode", () => {
+        it("types one-line text when unset", () =>
+            expect(resolvePasteMode(undefined, "hello")).toBe("typing"));
+        it("pastes multi-line text when unset", () =>
+            expect(resolvePasteMode(undefined, "a\nb")).toBe("clipboard"));
+        it("treats auto the same as unset", () => {
+            expect(resolvePasteMode("auto", "hello")).toBe("typing");
+            expect(resolvePasteMode("auto", "a\nb")).toBe("clipboard");
+        });
+        // An explicit choice is never second-guessed, in either direction
+        it("honours an explicit typing choice for multi-line text", () =>
+            expect(resolvePasteMode("typing", "a\nb")).toBe("typing"));
+        it("honours an explicit clipboard choice for one-line text", () =>
+            expect(resolvePasteMode("clipboard", "hello")).toBe("clipboard"));
+    });
 });

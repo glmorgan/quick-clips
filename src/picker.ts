@@ -144,6 +144,15 @@ export type PickerOptions = {
      * noise on a fixed menu like the transform groups.
      */
     showGroupCounts?: boolean;
+    /**
+     * Numbers the visible rows and binds Cmd+1..9 to pick one directly.
+     *
+     * The modifier is not optional: the filter field owns the keyboard, and stored text is full
+     * of digits (ports, ids, dates, hex colours), so a bare number would paste a row instead of
+     * filtering for it — and a selection types into whatever app is frontmost, which nothing can
+     * take back.
+     */
+    quickSelect?: boolean;
     /** Placeholder for the filter field; defaults to a generic prompt. */
     filterPlaceholder?: string;
     /**
@@ -407,6 +416,7 @@ function renderHtml(
             <span class="label">${escapeHtml(item.label)}</span>
             ${item.preview ? `<span class="preview">${escapeHtml(item.preview)}</span>` : ""}
           </span>
+          ${options.quickSelect ? `<span class="num" aria-hidden="true"></span>` : ""}
           ${(options.onToggleHidden || options.onEdit || options.onDelete)
             ? `<span class="controls">` : ""}
           ${options.onToggleHidden ? `<span class="hide${item.hidden ? " on" : ""}" role="button"`
@@ -845,6 +855,26 @@ function renderHtml(
     background: var(--kbd); border-radius: 4px; font: inherit; font-size: 10px; color: var(--fg-dim);
   }
 
+  /*
+   * Shown only while Cmd is held, and positioned over the row controls rather than beside them.
+   * Laid out in flow it would either add clutter at rest or, swapped in for the controls, change
+   * how much room the value has and shift its ellipsis.
+   */
+  .num {
+    position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+    display: none; place-items: center; min-width: 18px; height: 18px; padding: 0 5px;
+    background: var(--kbd); border-radius: 5px;
+    font-size: 11px; font-weight: 700; color: var(--fg-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  html.cmd .card.numbered .num { display: grid; }
+  /*
+   * visibility, not display: the controls keep their box so nothing moves. Scoped to numbered
+   * rows — past the ninth there is no number to show in their place, so hiding them would cost
+   * those rows their controls for nothing.
+   */
+  html.cmd .card.numbered .controls { visibility: hidden; }
+
   #notice {
     position: fixed; left: 50%; bottom: 52px; transform: translateX(-50%) translateY(8px);
     display: flex; align-items: center; gap: 12px;
@@ -910,6 +940,7 @@ function renderHtml(
     <span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> navigate</span>
     <span><kbd>↵</kbd> select</span>
     ${options.onEdit ? "<span><kbd>F2</kbd> edit</span>" : ""}
+    ${options.quickSelect ? "<span><kbd>\u2318</kbd><kbd>1</kbd>–<kbd>9</kbd> apply</span>" : ""}
 
     <span><kbd>esc</kbd> cancel</span>
   </div>
@@ -918,6 +949,7 @@ function renderHtml(
 (function () {
   var TOKEN = ${embedJson(token)};
   var SELECTED = ${embedJson(selectedId ?? null)};
+  var QUICK_SELECT = ${embedJson(!!options.quickSelect)};
   var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
   var sections = Array.prototype.slice.call(document.querySelectorAll('section'));
   var q = document.getElementById('q');
@@ -930,6 +962,8 @@ function renderHtml(
   var undoPending = false;
   /** Identifies the newest notice, so an older one's timer cannot dismiss it early. */
   var noticeSeq = 0;
+  /** A numbered choice waiting for the modifier to come up, so a second press cannot queue. */
+  var awaitingRelease = false;
 
   function esc(s) {
     return s.replace(/[&<>"']/g, function (c) {
@@ -1000,6 +1034,19 @@ function renderHtml(
         tally.textContent = '(' + s.querySelectorAll('.card:not(.is-action):not(.leaving)').length + ')';
       }
     });
+    if (QUICK_SELECT) {
+      // Numbered by visible position, so the shortcuts follow the filter: narrow to three
+      // matches and Cmd+2 takes the second of those, not the second in the collection.
+      var pickable = vis.filter(function (c) { return !c.dataset.action; });
+      cards.forEach(function (c) {
+        var n = c.querySelector('.num');
+        if (!n) return;
+        var at = pickable.indexOf(c);
+        var numbered = at >= 0 && at < 9;
+        n.textContent = numbered ? String(at + 1) : '';
+        c.classList.toggle('numbered', numbered);
+      });
+    }
     // Action rows are always visible, so counting them would make the total look wrong.
     var selectable = cards.filter(function (c) { return !c.dataset.action; });
     var visSelectable = vis.filter(function (c) { return !c.dataset.action; });
@@ -1417,6 +1464,16 @@ function renderHtml(
   document.addEventListener('keydown', function (e) {
     // The inline editor owns the keyboard while it is open.
     if (isEditing()) return;
+    // Numbered shortcuts run over the visible list, so they follow the filter: narrow to three
+    // matches and this takes the second of those. The modifier is essential — a bare digit
+    // belongs to the filter, and choosing a row types it into whatever app is frontmost.
+    if (QUICK_SELECT && (e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) {
+      e.preventDefault();
+      var pickable = visible().filter(function (c) { return !c.dataset.action; });
+      var target = pickable[Number(e.key) - 1];
+      if (target) chooseOnModifierRelease(target);
+      return;
+    }
     // Only claimed while an undo is actually on offer. The filter field has focus almost all the
     // time, so taking ⌘Z unconditionally would cost it its native text undo for nothing.
     if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z') && undoPending) {
@@ -1485,6 +1542,57 @@ function renderHtml(
     });
   }
   bindCards();
+
+  /*
+   * Reveals the row numbers while Cmd is down.
+   *
+   * Cleared on blur as well as keyup: holding the modifier and switching away never delivers a
+   * keyup here, which would strand the numbers on screen with nothing to explain them.
+   */
+  if (QUICK_SELECT) {
+    var setCmd = function (on) { document.documentElement.classList.toggle('cmd', on); };
+    document.addEventListener('keydown', function (e) {
+      if ((e.key === 'Meta' || e.key === 'Control') && !isEditing()) setCmd(true);
+    });
+    document.addEventListener('keyup', function (e) {
+      if (e.key === 'Meta' || e.key === 'Control') setCmd(false);
+    });
+    window.addEventListener('blur', function () { setCmd(false); });
+  }
+
+  /**
+   * Chooses a row, but not until the modifier is released.
+   *
+   * Selecting types or pastes into whatever app is frontmost, and that happens within a few tens
+   * of milliseconds of this window closing — while Cmd or Ctrl is realistically still down. A
+   * held modifier turns typed characters into shortcuts, and turns the paste keystroke into a
+   * different one. Waiting here fixes every output path at once, rather than each one guarding
+   * against a keyboard state it cannot see.
+   *
+   * The row is marked chosen straight away, so the delay reads as confirmation rather than lag.
+   */
+  function chooseOnModifierRelease(target) {
+    if (sent || awaitingRelease) return;
+    awaitingRelease = true;
+    var at = visible().indexOf(target);
+    if (at !== -1) { active = at; paint(); }
+
+    var done = false;
+    function go() {
+      if (done) return;
+      done = true;
+      document.removeEventListener('keyup', onRelease);
+      clearTimeout(timer);
+      send(target.dataset.id);
+    }
+    function onRelease(e) {
+      if (e.key === 'Meta' || e.key === 'Control') go();
+    }
+    document.addEventListener('keyup', onRelease);
+    // A release that never arrives — the window losing focus mid-press, say — must not strand
+    // the choice.
+    var timer = setTimeout(go, 1200);
+  }
 
   window.addEventListener('beforeunload', function () { if (!sent) send(null); });
 

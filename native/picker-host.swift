@@ -185,6 +185,31 @@ final class PickerWindowController: NSObject, NSWindowDelegate, WKNavigationDele
 // MARK: - Unicode typing
 
 /**
+ * Holds off until the user lets go of any modifier that would turn text into commands.
+ *
+ * Typing is triggered by a keystroke — Cmd+1..9 picks a clip — and the paste follows within a
+ * few tens of milliseconds, while the key is realistically still down. Clearing each event's
+ * flags handles what we post; this handles what the receiving app sees of the real keyboard.
+ *
+ * Bounded, so a stuck or genuinely held modifier delays the text rather than losing it. Shift is
+ * not included: it does not turn a character into a command, and waiting on it would stall.
+ */
+private func waitForModifiersToClear(timeout: useconds_t = 600_000) {
+    let blocking: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate]
+    let step: useconds_t = 10_000
+    var waited: useconds_t = 0
+    while !CGEventSource.flagsState(.combinedSessionState).intersection(blocking).isEmpty {
+        if waited >= timeout {
+            log("modifiers still held after \(timeout / 1000)ms; typing anyway")
+            return
+        }
+        usleep(step)
+        waited += step
+    }
+    if waited > 0 { log("waited \(waited / 1000)ms for modifiers to clear") }
+}
+
+/**
  * Types text into the frontmost application by posting Unicode directly.
  *
  * AppleScript's `keystroke` synthesises presses against the current keyboard layout, so any
@@ -196,6 +221,7 @@ final class PickerWindowController: NSObject, NSWindowDelegate, WKNavigationDele
  */
 private func typeText(_ text: String) {
     guard !text.isEmpty else { return }
+    waitForModifiersToClear()
     let source = CGEventSource(stateID: .hidSystemState)
     let units = Array(text.utf16)
     // Chunked because keyboardSetUnicodeString silently truncates oversized payloads.
@@ -210,6 +236,11 @@ private func typeText(_ text: String) {
             guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: isDown)
             else { continue }
             event.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+            // Explicitly unmodified. An event created from a source inherits that source's flag
+            // state, and .hidSystemState is the live hardware state — so a key the user is still
+            // holding rides along on every character and the receiving app reads them as
+            // shortcuts rather than text. Nothing typed here is ever meant to carry a modifier.
+            event.flags = []
             event.post(tap: .cghidEventTap)
         }
         index = end

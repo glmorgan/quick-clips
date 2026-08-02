@@ -5,7 +5,7 @@ import { writeFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { applyTransform, isGenerator } from "../utils.js";
-import { outputText, readClipboard } from "../typing.js";
+import { outputText, readClipboard, type PasteMode } from "../typing.js";
 import { findHosts, showPicker, type PickerItem } from "../picker.js";
 
 const execAsync = promisify(exec);
@@ -162,7 +162,7 @@ function buildPickerItems(): PickerItem[] {
 
 type UtilSettings = {
     transform?: TransformType;
-    pasteMode?: 'typing' | 'clipboard';
+    pasteMode?: PasteMode;
 };
 
 @action({ UUID: "com.quickclips.streamdeck.clipboard-utils" })
@@ -251,7 +251,7 @@ return item 1 of chosen`;
     override async onWillAppear(ev: WillAppearEvent<UtilSettings>): Promise<void> {
         const settings = await ev.action.getSettings();
         if (settings.pasteMode === undefined) {
-            await ev.action.setSettings({ ...settings, pasteMode: 'typing' });
+            await ev.action.setSettings({ ...settings, pasteMode: 'auto' });
         }
         await this.updateDisplay(ev, settings);
     }
@@ -335,7 +335,7 @@ return item 1 of chosen`;
 
         const transformed = applyTransform(text, settings.transform);
         try {
-            await outputText(transformed, settings.pasteMode ?? 'typing',
+            await outputText(transformed, settings.pasteMode,
                 m => streamDeck.logger.warn(m));
         } catch (error) {
             streamDeck.logger.error("Failed to output text:", error);

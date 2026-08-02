@@ -4,11 +4,11 @@ import {
 } from "@elgato/streamdeck";
 import { randomUUID } from "node:crypto";
 import {
-    addClip, clipRowText, clipSearchText, detectClipKind, promoteClip, removeClip,
+    addClip, clipRowText, clipSearchText, detectClipKind, markClipUsed, removeClip,
     restoreClip, toggleClipHidden, updateClip, type ClipEntry, type ClipKind,
 } from "../utils.js";
 import { findHosts, showPicker, type PickerItem } from "../picker.js";
-import { outputText, readClipboard } from "../typing.js";
+import { outputText, readClipboard, type PasteMode } from "../typing.js";
 
 /** Id of the picker row that captures the current clipboard. Not a clip id. */
 const ADD_ACTION = "add-from-clipboard";
@@ -59,7 +59,7 @@ type ManagerSettings = {
     /** Collection name, shown on the key and as the picker heading. */
     name?: string;
     clips?: ClipEntry[];
-    pasteMode?: "typing" | "clipboard";
+    pasteMode?: PasteMode;
 };
 
 /**
@@ -141,7 +141,7 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
     override async onWillAppear(ev: WillAppearEvent<ManagerSettings>): Promise<void> {
         const settings = await ev.action.getSettings();
         if (settings.pasteMode === undefined) {
-            await ev.action.setSettings({ ...settings, pasteMode: "typing" });
+            await ev.action.setSettings({ ...settings, pasteMode: "auto" });
         }
         await this.updateDisplay(ev, settings);
     }
@@ -274,11 +274,14 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
             return;
         }
 
-        // Most-recently-used ordering, so what gets used keeps floating up without a pinning UI.
-        await persist(promoteClip(clips, clip.id));
+        // Recorded, not reordered. Pasting a clip leaves it exactly where it is: the list is a
+        // curated set of references rather than a history, so a stable position is what makes it
+        // learnable — and Cmd+1..9 would otherwise mean something different after every paste.
+        // The timestamp only decides which clip the cap evicts.
+        await persist(markClipUsed(clips, clip.id, Date.now()));
 
         try {
-            await outputText(clip.value, settings.pasteMode ?? "typing",
+            await outputText(clip.value, settings.pasteMode,
                 m => streamDeck.logger.warn(m));
         } catch (error) {
             streamDeck.logger.error("Failed to output clip:", error);
@@ -343,6 +346,9 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
                     filterPlaceholder: "Filter clips…",
                     // How full the collection is, against a cap of 50, is worth seeing at a glance.
                     showGroupCounts: true,
+                    // Cmd+1..9 takes a clip straight from the filtered list, saving the arrowing
+                    // when the one you want is not the first match.
+                    quickSelect: true,
                     actions: [{
                         id: ADD_ACTION,
                         label: "Add from clipboard",
@@ -372,8 +378,8 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
                         return this.toPickerItems(getClips());
                     },
                     onDelete: async (clipId: string) => {
-                        // Position captured too, so undo puts the clip back where it was rather
-                        // than at the top, which would reorder a list ordered by use.
+                        // Position captured too, so undo puts the clip back exactly where it
+                        // was rather than at the top.
                         const before = getClips();
                         const index = before.findIndex(c => c.id === clipId);
                         await persist(removeClip(before, clipId));
