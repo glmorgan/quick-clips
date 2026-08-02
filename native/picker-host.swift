@@ -32,6 +32,16 @@ private func flagValue(_ name: String) -> String? {
     return nil
 }
 
+/**
+ * The picker page's own background, mirroring --bg in picker.ts.
+ *
+ * Every surface that can be seen before the HTML paints is set to this, so the window opens
+ * already the right colour. Nothing here may use a dynamic system colour: the page is always
+ * dark, while NSColor.windowBackgroundColor resolves to #FFFFFF under the light appearance —
+ * which showed as a white flash on a Mac set to Light mode.
+ */
+private let pageBackground = NSColor(srgbRed: 0x33 / 255.0, green: 0x33 / 255.0, blue: 0x33 / 255.0, alpha: 1)
+
 /// Fraction of leftover vertical space placed above the window; mirrors VERTICAL_BIAS in picker.ts.
 private let verticalBias: CGFloat = 0.35
 private let defaultSize = CGSize(width: 860, height: 670)
@@ -67,7 +77,9 @@ final class PickerWindowController: NSObject, NSWindowDelegate, WKNavigationDele
         webView.navigationDelegate = self
         webView.uiDelegate = self
         // The page is our own content; a visible bounce/overscroll would look wrong in a panel.
-        if #available(macOS 12.0, *) { webView.underPageBackgroundColor = .windowBackgroundColor }
+        // This is also the colour shown before the first paint, so it must be the page's own
+        // background rather than the system's — see pageBackground.
+        if #available(macOS 12.0, *) { webView.underPageBackgroundColor = pageBackground }
 
         // contentRect is the *content* area and AppKit adds the title bar above it, so the page
         // gets exactly the height asked for — no chrome measurement, unlike Chrome where
@@ -89,7 +101,11 @@ final class PickerWindowController: NSObject, NSWindowDelegate, WKNavigationDele
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
-        window.backgroundColor = NSColor(calibratedRed: 0.2, green: 0.2, blue: 0.2, alpha: 1.0)
+        window.backgroundColor = pageBackground
+        // Pins the frame to the dark appearance too. The page is always dark, so leaving this to
+        // follow the system drew light traffic lights and a light titlebar over a dark page on a
+        // Mac set to Light mode.
+        window.appearance = NSAppearance(named: .darkAqua)
         // Float above the app the user was working in, since that app keeps keyboard focus context.
         window.level = .floating
         window.isReleasedWhenClosed = false

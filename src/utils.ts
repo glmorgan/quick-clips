@@ -281,21 +281,46 @@ export function addClip(
 }
 
 /**
- * Sets or clears a clip's user-supplied title.
+ * Applies an edit to a clip's title and text at once.
  *
- * A blank title removes it rather than storing an empty string, so the row falls back to
- * summarising the value instead of rendering as an empty label.
+ * The stored label is regenerated from the new text, because it is a cached summary rather than
+ * something the user maintains; leaving it would show the old contents in the list. Position,
+ * id, capture time and masking all survive — editing is a correction, not a re-capture, so it
+ * should not reorder a list ordered by use.
+ *
+ * Refuses instead of silently breaking an invariant: `duplicate` when another clip already holds
+ * that exact text, which {@link addClip} otherwise guarantees cannot happen, and the same empty
+ * and over-long limits a capture is held to.
  */
-export function renameClip(clips: readonly ClipEntry[], id: string, title: string): ClipEntry[] {
-    const trimmed = title.trim();
-    return clips.map(c => {
-        if (c.id !== id) return c;
-        if (trimmed === "") {
+export function updateClip(
+    clips: readonly ClipEntry[],
+    id: string,
+    next: { title: string; value: string }
+): {
+    clips: ClipEntry[];
+    updated: boolean;
+    reason?: "missing" | "empty" | "too-long" | "duplicate";
+} {
+    const unchanged = () => [...clips];
+    if (!clips.some(c => c.id === id)) return { clips: unchanged(), updated: false, reason: "missing" };
+    if (next.value.trim() === "") return { clips: unchanged(), updated: false, reason: "empty" };
+    if (next.value.length > MAX_CLIP_CHARS) {
+        return { clips: unchanged(), updated: false, reason: "too-long" };
+    }
+    if (clips.some(c => c.id !== id && c.value === next.value)) {
+        return { clips: unchanged(), updated: false, reason: "duplicate" };
+    }
+
+    const title = next.title.trim();
+    return {
+        clips: clips.map(c => {
+            if (c.id !== id) return c;
             const { title: _dropped, ...rest } = c;
-            return rest;
-        }
-        return { ...c, title: trimmed };
-    });
+            const edited: ClipEntry = { ...rest, label: summarizeClip(next.value), value: next.value };
+            return title === "" ? edited : { ...edited, title };
+        }),
+        updated: true,
+    };
 }
 
 /** The name to show for a clip: the user's title when set, otherwise a summary of the value. */

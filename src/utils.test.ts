@@ -1,12 +1,16 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
     addClip, applyTransform, escapeForAppleScript, generateLabel, isGenerator,
-    promoteClip, removeClip, renameClip, restoreClip, clipDisplayName, clipRowText, clipSearchText,
+    promoteClip, removeClip, restoreClip, updateClip, clipDisplayName, clipRowText, clipSearchText,
     toggleClipHidden, splitUrl,
     summarizeClip, detectClipKind,
     MAX_CLIPS, MAX_CLIP_CHARS, type ClipEntry,
 } from "./utils.js";
 import { isKeystrokeSafe } from "./typing.js";
+
+/** Title-only edit, for tests that only care about naming. */
+const retitle = (clips: ClipEntry[], id: string, title: string): ClipEntry[] =>
+    updateClip(clips, id, { title, value: clips.find(c => c.id === id)!.value }).clips;
 
 describe("applyTransform", () => {
     describe("upper", () => {
@@ -364,7 +368,7 @@ describe("clip collections", () => {
         });
         it("preserves a user title when the same value is captured again", () => {
             // Re-copying something you already named must not silently discard the name
-            const named = renameClip(addClip([], "abc", "id1", 1).clips, "id1", "P1 Client Id");
+            const named = retitle(addClip([], "abc", "id1", 1).clips, "id1", "P1 Client Id");
             const again = addClip(named, "abc", "id2", 2);
             expect(again.clips).toHaveLength(1);
             expect(again.clips[0].title).toBe("P1 Client Id");
@@ -372,8 +376,8 @@ describe("clip collections", () => {
         it("allows two clips to share a title when their values differ", () => {
             let clips = addClip([], "value-one", "id1", 1).clips;
             clips = addClip(clips, "value-two", "id2", 2).clips;
-            clips = renameClip(clips, "id1", "Client Id");
-            clips = renameClip(clips, "id2", "Client Id");
+            clips = retitle(clips, "id1", "Client Id");
+            clips = retitle(clips, "id2", "Client Id");
             expect(clips).toHaveLength(2);
             expect(clips.map(c => c.title)).toEqual(["Client Id", "Client Id"]);
             // Distinct ids keep selection, rename and delete unambiguous despite the shared name
@@ -382,8 +386,8 @@ describe("clip collections", () => {
         it("removes only the intended clip when titles collide", () => {
             let clips = addClip([], "value-one", "id1", 1).clips;
             clips = addClip(clips, "value-two", "id2", 2).clips;
-            clips = renameClip(clips, "id1", "Same");
-            clips = renameClip(clips, "id2", "Same");
+            clips = retitle(clips, "id1", "Same");
+            clips = retitle(clips, "id2", "Same");
             const left = removeClip(clips, "id1");
             expect(left).toHaveLength(1);
             // The survivor is the *other* clip — deletion follows the id, not the shared title
@@ -414,31 +418,89 @@ describe("clip collections", () => {
         });
     });
 
-    describe("renameClip", () => {
+    describe("updateClip", () => {
         it("sets a user title", () => {
-            const r = renameClip([mk("4e25-…", "1")], "1", "P1 Client Id");
-            expect(r[0].title).toBe("P1 Client Id");
+            const r = updateClip([mk("4e25-…", "1")], "1", { title: "P1 Client Id", value: "4e25-…" });
+            expect(r.updated).toBe(true);
+            expect(r.clips[0].title).toBe("P1 Client Id");
         });
-        it("trims surrounding whitespace", () =>
-            expect(renameClip([mk("v", "1")], "1", "  Padded  ")[0].title).toBe("Padded"));
+        it("trims surrounding whitespace from the title", () =>
+            expect(updateClip([mk("v", "1")], "1", { title: "  Padded  ", value: "v" }).clips[0].title)
+                .toBe("Padded"));
         it("clears the title when blank, rather than storing an empty string", () => {
-            const named = renameClip([mk("v", "1")], "1", "Name");
-            const cleared = renameClip(named, "1", "   ");
+            const named = updateClip([mk("v", "1")], "1", { title: "Name", value: "v" }).clips;
+            const cleared = updateClip(named, "1", { title: "   ", value: "v" }).clips;
             expect(cleared[0].title).toBeUndefined();
         });
         it("leaves other clips untouched", () => {
-            const r = renameClip([mk("a", "1"), mk("b", "2")], "1", "First");
-            expect(r[1].title).toBeUndefined();
+            const r = updateClip([mk("a", "1"), mk("b", "2")], "1", { title: "First", value: "a" });
+            expect(r.clips[1]).toEqual(mk("b", "2"));
         });
-        it("ignores unknown ids", () =>
-            expect(renameClip([mk("a", "1")], "nope", "X")[0].title).toBeUndefined());
         it("does not mutate the input", () => {
             const clips = [mk("a", "1")];
-            renameClip(clips, "1", "Name");
-            expect(clips[0].title).toBeUndefined();
+            updateClip(clips, "1", { title: "Name", value: "changed" });
+            expect(clips[0]).toEqual(mk("a", "1"));
         });
-        it("never overwrites the value", () =>
-            expect(renameClip([mk("secret-value", "1")], "1", "Label")[0].value).toBe("secret-value"));
+
+        it("replaces the text", () => {
+            const r = updateClip([mk("before", "1")], "1", { title: "", value: "after" });
+            expect(r.clips[0].value).toBe("after");
+        });
+        it("regenerates the cached label so the list stops showing the old text", () => {
+            const r = updateClip([mk("before", "1")], "1", { title: "", value: "after" });
+            expect(r.clips[0].label).toBe(summarizeClip("after"));
+            expect(r.clips[0].label).not.toContain("before");
+        });
+        it("keeps id, capture time and masking across an edit", () => {
+            const secret: ClipEntry = { ...mk("old", "s1"), hidden: true, addedAt: 42 };
+            const r = updateClip([secret], "s1", { title: "Key", value: "new" });
+            expect(r.clips[0].id).toBe("s1");
+            expect(r.clips[0].addedAt).toBe(42);
+            expect(r.clips[0].hidden).toBe(true);
+        });
+        it("does not reorder the collection", () => {
+            const clips = [mk("a", "1"), mk("b", "2"), mk("c", "3")];
+            const r = updateClip(clips, "3", { title: "", value: "edited" });
+            expect(r.clips.map(c => c.id)).toEqual(["1", "2", "3"]);
+        });
+        it("preserves whitespace exactly", () => {
+            const raw = "  indented\n\tline  ";
+            expect(updateClip([mk("x", "1")], "1", { title: "", value: raw }).clips[0].value).toBe(raw);
+        });
+
+        it("refuses an unknown id", () => {
+            const r = updateClip([mk("a", "1")], "nope", { title: "X", value: "y" });
+            expect(r.updated).toBe(false);
+            expect(r.reason).toBe("missing");
+        });
+        it("refuses empty text", () => {
+            const r = updateClip([mk("a", "1")], "1", { title: "Name", value: "   \n " });
+            expect(r.updated).toBe(false);
+            expect(r.reason).toBe("empty");
+            expect(r.clips[0].value).toBe("a");
+        });
+        it("refuses text past the cap", () => {
+            const r = updateClip([mk("a", "1")], "1", { title: "", value: "x".repeat(MAX_CLIP_CHARS + 1) });
+            expect(r.updated).toBe(false);
+            expect(r.reason).toBe("too-long");
+        });
+        it("refuses text another clip already holds, which addClip otherwise prevents", () => {
+            const r = updateClip([mk("a", "1"), mk("b", "2")], "1", { title: "", value: "b" });
+            expect(r.updated).toBe(false);
+            expect(r.reason).toBe("duplicate");
+            expect(r.clips.map(c => c.value)).toEqual(["a", "b"]);
+        });
+        it("allows an edit that leaves the text alone, so a title-only change works", () => {
+            const r = updateClip([mk("a", "1"), mk("b", "2")], "1", { title: "Named", value: "a" });
+            expect(r.updated).toBe(true);
+            expect(r.clips[0].title).toBe("Named");
+        });
+        it("allows two clips to share a title when their values differ", () => {
+            let clips = [mk("one", "1"), mk("two", "2")];
+            clips = updateClip(clips, "1", { title: "Same", value: "one" }).clips;
+            clips = updateClip(clips, "2", { title: "Same", value: "two" }).clips;
+            expect(clips.map(c => c.title)).toEqual(["Same", "Same"]);
+        });
     });
 
     describe("clipDisplayName", () => {

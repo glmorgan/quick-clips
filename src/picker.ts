@@ -101,13 +101,23 @@ export type PickerOptions = {
      */
     onUndoDelete?: () => Promise<PickerItem[]>;
     /**
-     * Renames an item. Supplying this puts an edit control on every row and enables inline
-     * editing of the label. An empty string means "clear the name".
+     * Edits an item's name and text together. Supplying this puts a pencil on every row, binds
+     * F2, and expands the row into an editor when either is used. An empty title means "clear
+     * the name"; throw to explain why an edit could not be applied.
      *
      * Editing happens inline rather than via `prompt()`, which silently does nothing in the
      * native host unless the web view implements a text-input panel.
      */
-    onRename?: (itemId: string, title: string) => Promise<PickerItem[]>;
+    onEdit?: (itemId: string, title: string, value: string) => Promise<PickerItem[]>;
+    /**
+     * Supplies an item's full text when the editor opens. Required alongside {@link onEdit},
+     * because a {@link PickerItem} carries only a truncated preview — and nothing at all for a
+     * masked item.
+     *
+     * Fetched on demand rather than embedded in every row: it keeps whole collections out of the
+     * page, and a hidden item's text out of the DOM until that row is deliberately opened.
+     */
+    onReadValue?: (itemId: string) => Promise<string>;
     /**
      * Toggles whether an item's value is masked on screen. Supplying this puts a hide control on
      * every row. Masking is the caller's job — the picker only renders what it is given and
@@ -127,6 +137,13 @@ export type PickerOptions = {
      * stay readable rather than truncating a few characters in.
      */
     layout?: "grid" | "list";
+    /**
+     * Appends a running total to each group heading, e.g. "CLIPS (12)".
+     *
+     * Off by default: it earns its place for a collection that grows and shrinks, and reads as
+     * noise on a fixed menu like the transform groups.
+     */
+    showGroupCounts?: boolean;
     /** Placeholder for the filter field; defaults to a generic prompt. */
     filterPlaceholder?: string;
     /**
@@ -390,17 +407,22 @@ function renderHtml(
             <span class="label">${escapeHtml(item.label)}</span>
             ${item.preview ? `<span class="preview">${escapeHtml(item.preview)}</span>` : ""}
           </span>
-          ${(options.onToggleHidden || options.onRename || options.onDelete)
+          ${(options.onToggleHidden || options.onEdit || options.onDelete)
             ? `<span class="controls">` : ""}
           ${options.onToggleHidden ? `<span class="hide${item.hidden ? " on" : ""}" role="button"`
             + ` title="${item.hidden ? "Show value" : "Hide value from view (not encrypted)"}">`
             + (item.hidden ? EYE_OFF_SVG : EYE_SVG) + `</span>` : ""}
-          ${options.onRename ? `<span class="edit" role="button" title="Rename (or press F2)">` + PENCIL_SVG + `</span>` : ""}
+          ${options.onEdit ? `<span class="edit" role="button" title="Edit name and text (or press F2)">` + PENCIL_SVG + `</span>` : ""}
           ${options.onDelete ? `<span class="del" role="button" title="Delete this clip">` + CROSS_SVG + `</span>` : ""}
-          ${(options.onToggleHidden || options.onRename || options.onDelete) ? `</span>` : ""}
+          ${(options.onToggleHidden || options.onEdit || options.onDelete) ? `</span>` : ""}
         </div>`)
             .join("");
-        return `<section><h2>${escapeHtml(group)}</h2><div class="grid">${cards}</div></section>`;
+        // The tally is left empty here and filled by paint(). Rendering it server-side would go
+        // stale the moment a row is deleted, because a delete removes the node in place rather
+        // than re-rendering the page.
+        const tally = options.showGroupCounts ? `<span class="tally"></span>` : "";
+        return `<section><h2>${escapeHtml(group)}${tally}</h2>`
+            + `<div class="grid">${cards}</div></section>`;
     }).join("");
 
     // Action rows come first so an empty collection still offers something to do.
@@ -556,6 +578,27 @@ function renderHtml(
   }
   #q::placeholder { color: var(--fg-faint); }
   #count { flex: 0 0 auto; font-size: 11px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+  /*
+   * Shown only once there is something to clear.
+   *
+   * Hidden with visibility rather than display, so its box stays reserved and nothing moves as
+   * it comes and goes: the button is taller than the input's line box, so removing it from flow
+   * shrank the whole search bar, and shifted the match count sideways.
+   *
+   * The state is a class set by applyFilter() rather than a :placeholder-shown sibling rule.
+   * Chrome does not invalidate that selector when the field's value changes programmatically —
+   * measured: the selector matched nothing while the computed style stayed hidden, even after a
+   * forced reflow. applyFilter() is the single point every path goes through, so a class cannot
+   * drift out of step either.
+   */
+  #clear {
+    flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+    width: 20px; height: 20px; border-radius: 5px; cursor: pointer; color: var(--fg-faint);
+    transition: background 110ms ease, color 110ms ease;
+  }
+  #clear svg { display: block; }
+  #clear:hover { background: var(--kbd); color: var(--fg-dim); }
+  #clear.is-empty { visibility: hidden; pointer-events: none; }
 
   main { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 2px 0 12px; }
   main::-webkit-scrollbar { width: 10px; }
@@ -570,6 +613,8 @@ function renderHtml(
     margin: 0 0 5px; font-size: 10px; font-weight: 700; letter-spacing: .08em;
     text-transform: uppercase; color: var(--fg-faint);
   }
+  /* Lighter than the heading it follows: it is a detail about the group, not part of its name. */
+  .tally { margin-left: 5px; font-weight: 600; opacity: .72; font-variant-numeric: tabular-nums; }
 
   .grid {
     display: grid; gap: 9px;
@@ -711,24 +756,84 @@ function renderHtml(
   .card:hover .del, .card.active .del { color: var(--fg); }
   .del:hover { background: var(--kbd); color: #ff6b6b; }
   /* The inline editor replaces the label in place, so the row does not jump while renaming. */
-  .rename {
-    flex: 1 1 auto; min-width: 0; font: inherit; font-size: 13px; font-weight: 550;
-    color: var(--fg); background: var(--bg); border: 1px solid var(--accent);
-    border-radius: 6px; padding: 3px 7px; outline: none;
+  /*
+   * The row becomes the editor rather than opening one elsewhere, so the text stays where the
+   * eye already is. Everything else in the row is hidden for the duration — including the
+   * controls, so there is no delete button beside a half-finished edit.
+   */
+  .card.editing { flex-direction: column; align-items: stretch; gap: 8px; cursor: default; }
+  .card.editing > *:not(.editor) { display: none; }
+  .editor { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+  .ed-title, .ed-value {
+    width: 100%; font: inherit; color: var(--fg); background: var(--bg);
+    border: 1px solid var(--card-line); border-radius: 6px; padding: 6px 8px; outline: none;
   }
+  .ed-title { font-size: 13px; font-weight: 550; }
+  .ed-title:focus, .ed-value:focus { border-color: var(--accent); }
+  /*
+   * Capped and scrollable. Left to grow, a long snippet would turn one row into the whole
+   * window and push the rest of the list out of reach.
+   */
+  /*
+   * pre-wrap, not pre: indentation and blank lines survive, but a long line folds into view
+   * instead of scrolling sideways. A single-line JSON payload otherwise ran off the right edge
+   * with only a horizontal scrollbar to find it by. Breaking anywhere covers the unbroken
+   * cases — tokens, URLs, base64 — which offer no space to wrap at.
+   */
+  .ed-value {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    line-height: 1.45; min-height: 62px; max-height: 168px; resize: vertical;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .ed-actions { display: flex; align-items: center; gap: 8px; }
+  .ed-hint { flex: 1 1 auto; font-size: 11px; color: var(--fg-faint); }
+  .ed-btn {
+    padding: 4px 11px; font: inherit; font-size: 12px; border-radius: 6px; cursor: pointer;
+    background: var(--kbd); border: 1px solid var(--card-line); color: var(--fg);
+  }
+  .ed-btn.primary { background: var(--accent); border-color: var(--accent); color: #14161a; font-weight: 600; }
+  .ed-btn:hover { filter: brightness(1.12); }
 
   .label {
     flex: 0 1 auto; min-width: 0;
     font-size: 13px; font-weight: 550;
     letter-spacing: -.008em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  /*
-   * Only capped when a value shares the line, so a long name cannot push it off the row.
-   * Applying this unconditionally truncated every label that had nothing beside it — which is
-   * every card in the transform grid, and every unnamed clip.
-   */
-  .text.has-detail .label { max-width: 55%; }
   .label mark { background: transparent; color: var(--mark); font-weight: 700; }
+
+  /*
+   * Clip rows put the name above the value instead of beside it.
+   *
+   * Sharing one line made the two negotiate for width, and flexbox settles that in proportion to
+   * content length — so a long value crushed the name to a few characters, rendering a clip
+   * named "JSON" as "JSO…". Every previous fix here was a referee between them (a percentage cap,
+   * then a shrink factor); stacking retires the problem instead, and lets a long name occupy the
+   * whole row.
+   *
+   * Scoped to clip rows: transform cards are terse enough to read on one line, and an action
+   * row's hint belongs beside its label rather than under it.
+   */
+  /*
+   * The line boxes are pinned rather than left to the font, so the arithmetic below is exact:
+   * 18 + 3 + 16 = 37 for a named clip, and min-height holds an unnamed one to the same 37
+   * whether its value wraps to two lines or fits on one. Left to the font's own metrics, a
+   * short unnamed clip came out 3px shorter than everything else.
+   */
+  html[data-layout="list"] .card:not(.is-action) .text {
+    flex-direction: column; align-items: stretch; justify-content: center;
+    gap: 3px; min-height: 37px;
+  }
+  html[data-layout="list"] .card:not(.is-action) .label { line-height: 18px; max-width: 100%; }
+  html[data-layout="list"] .card:not(.is-action) .preview { width: 100%; line-height: 16px; }
+  /*
+   * An unnamed clip has no name to put on the first line, so its value takes both. That keeps
+   * every row the same height — which a blank first line would not — and gives a long unnamed
+   * clip twice the room rather than a placeholder word repeated down the list.
+   */
+  html[data-layout="list"] .card:not(.is-action) .text:not(.has-detail) .label {
+    white-space: normal; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
 
   footer {
     flex: 0 0 auto; border-top: 1px solid var(--line); background: var(--header);
@@ -781,6 +886,8 @@ function renderHtml(
       <input id="q" type="text" placeholder="${escapeHtml(options.filterPlaceholder ?? "Filter…")}" autocomplete="off"
              spellcheck="false" autofocus role="combobox" aria-expanded="true" />
       <span id="count"></span>
+      <span id="clear" class="is-empty" role="button" title="Clear filter"
+            aria-label="Clear filter">${CROSS_SVG}</span>
     </div>
   </div>
 </header>
@@ -802,7 +909,7 @@ function renderHtml(
   <div class="wrap">
     <span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> navigate</span>
     <span><kbd>↵</kbd> select</span>
-    ${options.onRename ? "<span><kbd>F2</kbd> rename</span>" : ""}
+    ${options.onEdit ? "<span><kbd>F2</kbd> edit</span>" : ""}
 
     <span><kbd>esc</kbd> cancel</span>
   </div>
@@ -814,6 +921,7 @@ function renderHtml(
   var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
   var sections = Array.prototype.slice.call(document.querySelectorAll('section'));
   var q = document.getElementById('q');
+  var clearBtn = document.getElementById('clear');
   var empty = document.getElementById('empty');
   var count = document.getElementById('count');
   var active = 0;
@@ -861,19 +969,36 @@ function renderHtml(
       esc(label.slice(at, at + term.length)) + '</mark>' + esc(label.slice(at + term.length));
   }
 
-  function paint() {
+  /**
+   * Repaints the selection.
+   *
+   * fromPointer suppresses the scroll. Bringing the selected row into view is for keyboard
+   * navigation, where arrowing past the fold has to make the list follow. Under the pointer it
+   * is wrong: the row is already under the cursor, nothing was asked to move, and scrolling
+   * shifts whichever row sits beneath a stationary mouse.
+   */
+  function paint(fromPointer) {
     var vis = visible();
     if (active >= vis.length) active = Math.max(0, vis.length - 1);
     cards.forEach(function (c) { c.classList.remove('active'); });
     if (vis[active]) {
       vis[active].classList.add('active');
-      vis[active].scrollIntoView({ block: 'nearest' });
+      // Nearest-block scrolling is already a no-op when the row is fully visible, so this only
+      // ever moves the list for a row that is cut off.
+      if (!fromPointer) vis[active].scrollIntoView({ block: 'nearest' });
     }
     empty.classList.toggle('show', vis.length === 0);
     sections.forEach(function (s) {
       var any = Array.prototype.slice.call(s.querySelectorAll('.card'))
         .some(function (c) { return !c.classList.contains('hidden'); });
       s.classList.toggle('hidden', !any);
+      var tally = s.querySelector('.tally');
+      if (tally) {
+        // The whole group, not the filtered subset — the search bar already reports "3 of 12",
+        // and a heading that changed as you typed would say the same thing twice. Rows on their
+        // way out are excluded so the number drops the instant a delete lands.
+        tally.textContent = '(' + s.querySelectorAll('.card:not(.is-action):not(.leaving)').length + ')';
+      }
     });
     // Action rows are always visible, so counting them would make the total look wrong.
     var selectable = cards.filter(function (c) { return !c.dataset.action; });
@@ -955,13 +1080,7 @@ function renderHtml(
         empty = document.getElementById('empty');
         bindCards();
         // Re-apply the active filter so a mutation does not silently widen the list.
-        var term = q.value.trim().toLowerCase();
-        cards.forEach(function (c) {
-          if (c.dataset.action) return;
-          var hay = c.dataset.search || '';
-          c.classList.toggle('hidden', term !== '' && hay.indexOf(term) === -1);
-          highlight(c, term);
-        });
+        applyFilter();
         // Restore the previously highlighted row when it still exists, else fall back.
         active = firstSelectable();
         if (keepId || keepAction) {
@@ -1079,61 +1198,132 @@ function renderHtml(
     report('unhandled rejection: ' + (e && e.reason));
   });
 
-  /** True while a row is being renamed, so global keys do not fight the editor. */
+  /** True while a row is open for editing, so global keys do not fight the editor. */
   function isEditing() {
-    return !!document.querySelector('.rename');
+    return !!document.querySelector('.editor');
   }
 
   /**
-   * Swaps the row's label for an input, in place.
+   * Expands the row into an editor for its name and its text.
    *
-   * prompt() would be simpler but does nothing in the native host unless the web view
-   * implements a text-input panel, so the editor is ordinary DOM.
+   * The text is fetched rather than read from the row: what the row shows is a truncated
+   * preview, and for a masked clip it is not the text at all. prompt() would be simpler but
+   * does nothing in the native host unless the web view implements a text-input panel, so the
+   * editor is ordinary DOM.
    */
-  function beginRename(card) {
-    if (isEditing()) return;
-    var text = card.querySelector('.text');
-    var labelEl = card.querySelector('.label');
-    if (!text || !labelEl) return;
+  function beginEdit(card) {
+    if (isEditing() || sent) return;
+    var id = card.dataset.id;
+    fetch('/message?t=' + encodeURIComponent(TOKEN), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'read', id: id })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (!res || typeof res.value !== 'string') {
+        showNotice((res && res.message) || 'Could not open that clip');
+        return;
+      }
+      // The row is looked up again rather than reused from the click. A refresh may have
+      // replaced every node while the text was being fetched — editing a row moments after
+      // saving another one did exactly that — and building the editor into the discarded node
+      // put it nowhere, so the pencil silently did nothing. A row that has since gone is
+      // simply not opened.
+      var live = null;
+      for (var i = 0; i < cards.length; i++) {
+        if (cards[i].dataset.id === id) { live = cards[i]; break; }
+      }
+      if (!live || !document.contains(live)) return;
+      openEditor(live, res.value);
+    }).catch(function (e) { report('read for edit failed: ' + e); });
+  }
 
-    var input = document.createElement('input');
-    input.className = 'rename';
-    input.type = 'text';
-    input.value = card.dataset.title || '';
-    input.placeholder = 'Name this clip';
-    labelEl.style.display = 'none';
-    text.insertBefore(input, labelEl);
-    input.focus();
-    input.select();
+  function openEditor(card, value) {
+    if (isEditing()) return;
+
+    var editor = document.createElement('div');
+    editor.className = 'editor';
+
+    var title = document.createElement('input');
+    title.className = 'ed-title';
+    title.type = 'text';
+    title.value = card.dataset.title || '';
+    title.placeholder = 'Name this clip';
+
+    var body = document.createElement('textarea');
+    body.className = 'ed-value';
+    body.value = value;
+    body.spellcheck = false;
+    body.rows = 4;
+
+    var actions = document.createElement('div');
+    actions.className = 'ed-actions';
+    var hint = document.createElement('span');
+    hint.className = 'ed-hint';
+    hint.textContent = '\u2318\u21B5 save \u00B7 esc cancel';
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'ed-btn';
+    cancel.textContent = 'Cancel';
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'ed-btn primary';
+    save.textContent = 'Save';
+    actions.appendChild(hint);
+    actions.appendChild(cancel);
+    actions.appendChild(save);
+
+    editor.appendChild(title);
+    editor.appendChild(body);
+    editor.appendChild(actions);
+    card.classList.add('editing');
+    card.appendChild(editor);
+    // Move the highlight onto the row being edited. Opening via the pencil does not select the
+    // row, which otherwise leaves two rows emphasised at once — the one you are editing and
+    // whichever one the highlight happened to be resting on.
+    var at = visible().indexOf(card);
+    if (at !== -1) { active = at; paint(); }
+    title.focus();
+    title.select();
 
     var done = false;
-    function finishEdit(commit) {
+    function close() {
       if (done) return;
       done = true;
-      var next = input.value;
-      input.remove();
-      labelEl.style.display = '';
-      if (!commit) return;
+      card.classList.remove('editing');
+      editor.remove();
+    }
+    function commit() {
+      if (done) return;
       fetch('/message?t=' + encodeURIComponent(TOKEN), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'rename', id: card.dataset.id, title: next })
+        body: JSON.stringify({
+          type: 'edit', id: card.dataset.id, title: title.value, value: body.value
+        })
       }).then(function (r) { return r.json(); }).then(function (res) {
+        // Kept open on a refusal, so a rejected edit is not simply thrown away.
         if (res && res.message) { showNotice(res.message); return; }
+        close();
         refresh();
-      }).catch(function (e) { report('rename failed: ' + e); });
+      }).catch(function (e) { report('edit failed: ' + e); });
     }
 
-    input.addEventListener('keydown', function (e) {
-      // Every key, not just the ones handled below — Space used to reach the row and activate
-      // it while a label containing a space was being typed.
+    // Deliberately no commit-on-blur: moving between the two fields would fire it. The only
+    // ways out are Save, Cancel, and the keys below.
+    editor.addEventListener('keydown', function (e) {
+      // Every key, not just the ones handled here — Space reaches the row and pastes it, and
+      // the arrows and Delete drive the list underneath.
       e.stopPropagation();
-      if (e.key === 'Enter') { e.preventDefault(); finishEdit(true); }
-      else if (e.key === 'Escape') { e.preventDefault(); finishEdit(false); }
+      if (e.key === 'Escape') { e.preventDefault(); close(); return; }
+      if (e.key === 'Enter') {
+        // In the text area Enter has to make a newline, so saving moves to the modifier. In the
+        // one-line name field there is no newline to make, so Enter saves as it always did.
+        if (e.metaKey || e.ctrlKey || e.target === title) { e.preventDefault(); commit(); }
+      }
     });
-    input.addEventListener('keyup', function (e) { e.stopPropagation(); });
-    input.addEventListener('keypress', function (e) { e.stopPropagation(); });
-    input.addEventListener('blur', function () { finishEdit(true); });
-    input.addEventListener('click', function (e) { e.stopPropagation(); });
+    editor.addEventListener('keyup', function (e) { e.stopPropagation(); });
+    editor.addEventListener('keypress', function (e) { e.stopPropagation(); });
+    editor.addEventListener('click', function (e) { e.stopPropagation(); });
+    cancel.addEventListener('click', close);
+    save.addEventListener('click', commit);
   }
 
   function runToggleHidden(itemId) {
@@ -1189,8 +1379,15 @@ function renderHtml(
 
   document.getElementById('notice-undo').addEventListener('click', runUndo);
 
-  q.addEventListener('input', function () {
+  /**
+   * Applies the current filter text to every row. Shared by typing, the clear button and
+   * refresh(), which each used to carry their own copy of this loop.
+   */
+  function applyFilter() {
     var term = q.value.trim().toLowerCase();
+    // Keyed on the raw value, not the trimmed term: a field holding only spaces still has
+    // something in it to clear.
+    clearBtn.classList.toggle('is-empty', q.value === '');
     cards.forEach(function (c) {
       // Action rows stay visible while filtering — "Add from clipboard" is most useful exactly
       // when a search found nothing. They also carry no searchable text of their own.
@@ -1199,8 +1396,22 @@ function renderHtml(
       c.classList.toggle('hidden', term !== '' && hay.indexOf(term) === -1);
       highlight(c, term);
     });
+  }
+
+  q.addEventListener('input', function () {
+    applyFilter();
     active = firstSelectable();
     paint();
+  });
+
+  clearBtn.addEventListener('click', function () {
+    q.value = '';
+    applyFilter();
+    active = firstSelectable();
+    paint();
+    // Focus goes back to the field: clearing is nearly always the start of a new search, and
+    // the window has no other sensible place for the caret.
+    q.focus();
   });
 
   document.addEventListener('keydown', function (e) {
@@ -1228,10 +1439,10 @@ function renderHtml(
       send(card.dataset.id);
     }
     else if (e.key === 'F2') {
-      var renameTarget = vis[active];
-      if (renameTarget && !renameTarget.dataset.action && renameTarget.querySelector('.edit')) {
+      var editTarget = vis[active];
+      if (editTarget && !editTarget.dataset.action && editTarget.querySelector('.edit')) {
         e.preventDefault();
-        beginRename(renameTarget);
+        beginEdit(editTarget);
       }
     }
     else if (e.key === 'Escape') { e.preventDefault(); send(null); }
@@ -1252,7 +1463,7 @@ function renderHtml(
       if (edit) {
         edit.addEventListener('click', function (e) {
           e.stopPropagation();   // must not select and paste the row
-          beginRename(card);
+          beginEdit(card);
         });
       }
       var del = card.querySelector('.del');
@@ -1269,7 +1480,7 @@ function renderHtml(
       });
       card.addEventListener('mousemove', function () {
         var at = visible().indexOf(card);
-        if (at !== -1 && at !== active) { active = at; paint(); }
+        if (at !== -1 && at !== active) { active = at; paint(true); }
       });
     });
   }
@@ -1415,7 +1626,10 @@ export async function showPicker(
                 let body = "";
                 req.on("data", chunk => { body += chunk; });
                 req.on("end", () => {
-                    let parsed: { type?: unknown; id?: unknown; action?: unknown; message?: unknown; title?: unknown };
+                    let parsed: {
+                        type?: unknown; id?: unknown; action?: unknown; message?: unknown;
+                        title?: unknown; value?: unknown;
+                    };
                     try {
                         parsed = JSON.parse(body);
                     } catch {
@@ -1460,16 +1674,39 @@ export async function showPicker(
                         return;
                     }
 
-                    // Rename mutates the list and leaves the window open.
-                    if (parsed.type === "rename" && typeof parsed.id === "string"
-                        && typeof parsed.title === "string") {
-                        const rename = options.onRename;
-                        if (!rename) {
+                    // Supplies the editor with an item's real text. Read-only, and answered
+                    // only for an item the picker is actually showing.
+                    if (parsed.type === "read" && typeof parsed.id === "string") {
+                        const read = options.onReadValue;
+                        if (!read || !currentItems.some(i => i.id === parsed.id)) {
                             res.writeHead(200, { "Content-Type": "application/json" })
                                 .end(JSON.stringify({ message: "Not supported" }));
                             return;
                         }
-                        rename(parsed.id, parsed.title)
+                        read(parsed.id)
+                            .then(value => {
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ value }));
+                            })
+                            .catch((error: unknown) => {
+                                const message = error instanceof Error ? error.message : "Failed";
+                                warn(`picker read failed: ${message}`);
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ message }));
+                            });
+                        return;
+                    }
+
+                    // An edit mutates the list and leaves the window open.
+                    if (parsed.type === "edit" && typeof parsed.id === "string"
+                        && typeof parsed.title === "string" && typeof parsed.value === "string") {
+                        const edit = options.onEdit;
+                        if (!edit) {
+                            res.writeHead(200, { "Content-Type": "application/json" })
+                                .end(JSON.stringify({ message: "Not supported" }));
+                            return;
+                        }
+                        edit(parsed.id, parsed.title, parsed.value)
                             .then(updated => {
                                 currentItems = updated;
                                 allowedIcons = new Set(
@@ -1482,7 +1719,7 @@ export async function showPicker(
                             })
                             .catch((error: unknown) => {
                                 const message = error instanceof Error ? error.message : "Failed";
-                                warn(`picker rename failed: ${message}`);
+                                warn(`picker edit failed: ${message}`);
                                 res.writeHead(200, { "Content-Type": "application/json" })
                                     .end(JSON.stringify({ message }));
                             });

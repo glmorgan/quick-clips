@@ -4,8 +4,8 @@ import {
 } from "@elgato/streamdeck";
 import { randomUUID } from "node:crypto";
 import {
-    addClip, clipRowText, clipSearchText, detectClipKind, promoteClip, removeClip, renameClip,
-    restoreClip, toggleClipHidden, type ClipEntry, type ClipKind,
+    addClip, clipRowText, clipSearchText, detectClipKind, promoteClip, removeClip,
+    restoreClip, toggleClipHidden, updateClip, type ClipEntry, type ClipKind,
 } from "../utils.js";
 import { findHosts, showPicker, type PickerItem } from "../picker.js";
 import { outputText, readClipboard } from "../typing.js";
@@ -15,6 +15,14 @@ const ADD_ACTION = "add-from-clipboard";
 
 /** Hold duration that turns a press into a capture. Matches the other two actions. */
 const LONG_PRESS_THRESHOLD = 1000;
+
+/** Why an edit was turned down, phrased for the picker's notice rather than the log. */
+const EDIT_REFUSALS: Record<"missing" | "empty" | "too-long" | "duplicate", string> = {
+    missing: "That clip is no longer here",
+    empty: "A clip cannot be empty",
+    "too-long": "That text is too long to store",
+    duplicate: "Another clip already holds that exact text",
+};
 
 /**
  * Badge shown for each detected clip shape. Colours reuse the palette the transform icons
@@ -326,7 +334,15 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
                     // Narrower than the transform grid: most clips are short, so the extra width
                     // was mostly trailing whitespace. Long values still ellipsise gracefully.
                     width: 720,
+                    // Sized to show eight clips whole rather than seven and a fraction, which
+                    // reads as the list being cut off. Measured: header 74 + footer 39 + main's
+                    // 12px bottom padding, with rows on a 63px pitch starting 86.5px in, puts the
+                    // eighth row's bottom edge at 709.1 — rounded up, with 3px of slack so
+                    // subpixel rounding cannot shave the last row.
+                    height: 712,
                     filterPlaceholder: "Filter clips…",
+                    // How full the collection is, against a cap of 50, is worth seeing at a glance.
+                    showGroupCounts: true,
                     actions: [{
                         id: ADD_ACTION,
                         label: "Add from clipboard",
@@ -337,8 +353,22 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
                         await persist(toggleClipHidden(getClips(), clipId));
                         return this.toPickerItems(getClips());
                     },
-                    onRename: async (clipId: string, newTitle: string) => {
-                        await persist(renameClip(getClips(), clipId, newTitle));
+                    onReadValue: async (clipId: string) => {
+                        const clip = getClips().find(c => c.id === clipId);
+                        if (!clip) throw new Error("That clip is no longer here");
+                        // Deliberately returns a hidden clip's text: masking guards against
+                        // someone reading over your shoulder, and opening the editor on a row is
+                        // an explicit decision to look at it.
+                        return clip.value;
+                    },
+                    onEdit: async (clipId: string, newTitle: string, newValue: string) => {
+                        const result = updateClip(getClips(), clipId, {
+                            title: newTitle, value: newValue,
+                        });
+                        if (!result.updated) {
+                            throw new Error(EDIT_REFUSALS[result.reason ?? "missing"]);
+                        }
+                        await persist(result.clips);
                         return this.toPickerItems(getClips());
                     },
                     onDelete: async (clipId: string) => {
