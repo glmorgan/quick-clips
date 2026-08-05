@@ -1,6 +1,6 @@
 import { action, KeyDownEvent, KeyUpEvent, SingletonAction, WillAppearEvent, WillDisappearEvent, DidReceiveSettingsEvent, SendToPluginEvent, streamDeck } from "@elgato/streamdeck";
-import { escapeForAppleScript, generateLabel } from "../utils.js";
-import { spawn } from "child_process";
+import { generateLabel } from "../utils.js";
+import { outputText, readClipboard, type PasteMode } from "../typing.js";
 import { exec } from "child_process";
 import { promisify } from "util";
 
@@ -27,7 +27,7 @@ const LONG_PRESS_THRESHOLD = 1000;
  * - Filled (unlocked): Filled clipboard icon with content preview
  * - Filled (locked): Locked icon when prevent clear is enabled
  * 
- * @platform macOS - Uses pbpaste/pbcopy for clipboard access and osascript for paste simulation
+ * @platform macOS - pbpaste for capture; output goes through src/typing.ts
  */
 @action({ UUID: "com.quickclips.streamdeck.clipboard-slot" })
 export class ClipboardSlot extends SingletonAction<SlotSettings> {
@@ -52,83 +52,6 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
      * @returns {Promise<string>} The current clipboard text, or empty string if read fails
      * @throws Logs error and returns empty string on clipboard access failure
      */
-    private async readClipboard(): Promise<string> {
-        try {
-            const { stdout } = await execAsync("pbpaste");
-            return stdout;
-        } catch (error) {
-            streamDeck.logger.error("Failed to read clipboard:", error);
-            return "";
-        }
-    }
-
-    /**
-     * Writes text content to the macOS system clipboard.
-     * 
-     * Uses the native `pbcopy` command-line utility via a spawned process with piped stdin.
-     * This approach ensures proper handling of large text content and special characters.
-     * 
-     * @private
-     * @param {string} text - The text content to write to the clipboard
-     * @returns {Promise<void>} Resolves when clipboard write completes successfully
-     * @throws {Error} Rejects if pbcopy process fails or exits with non-zero code
-     */
-    private async writeClipboard(text: string): Promise<void> {
-        return new Promise((resolve, reject) => {
-            const process = spawn("pbcopy");
-
-            process.stdin.write(text);
-            process.stdin.end();
-
-            process.on("error", (error) => {
-                streamDeck.logger.error("Failed to write clipboard:", error);
-                reject(error);
-            });
-
-            process.on("close", (code) => {
-                if (code === 0) {
-                    resolve();
-                } else {
-                    reject(new Error(`pbcopy exited with code ${code}`));
-                }
-            });
-        });
-    }
-
-    /**
-     * Simulates a Cmd+V keyboard shortcut to paste clipboard content into the active application.
-     * 
-     * Uses AppleScript via `osascript` to send a synthetic keystroke event to the system.
-     * This provides seamless paste functionality without requiring user keyboard input.
-     * 
-     * @private
-     * @returns {Promise<void>} Resolves when paste simulation completes
-     * @throws Logs error if AppleScript execution fails (does not reject)
-     */
-    private async simulatePaste(): Promise<void> {
-        try {
-            await execAsync('osascript -e \'tell application "System Events" to keystroke "v" using command down\'');
-        } catch (error) {
-            streamDeck.logger.error("Failed to simulate paste:", error);
-        }
-    }
-
-    private async simulateTyping(text: string): Promise<void> {
-        return new Promise((resolve, reject) => {
-            const script = `tell application "System Events" to keystroke "${escapeForAppleScript(text)}"`;
-            const proc = spawn('osascript', ['-']);
-            proc.stdin.write(script);
-            proc.stdin.end();
-            proc.on('error', (error) => {
-                streamDeck.logger.error("Failed to simulate typing:", error);
-                reject(error);
-            });
-            proc.on('close', (code) => {
-                if (code === 0) resolve();
-                else reject(new Error(`osascript exited with code ${code}`));
-            });
-        });
-    }
 
     /**
      * Generates a compact display label from clipboard text for button title.
@@ -225,7 +148,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     override async onWillAppear(ev: WillAppearEvent<SlotSettings>): Promise<void> {
         const settings = await ev.action.getSettings();
         if (settings.pasteMode === undefined) {
-            await ev.action.setSettings({ ...settings, pasteMode: 'typing' });
+            await ev.action.setSettings({ ...settings, pasteMode: 'auto' });
         }
         await this.updateDisplay(ev, settings);
     }
@@ -391,12 +314,8 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
     private async handleClick(ev: KeyUpEvent<SlotSettings>, settings: SlotSettings): Promise<void> {
         if (settings.value) {
             try {
-                if ((settings.pasteMode ?? 'typing') === 'typing') {
-                    await this.simulateTyping(settings.value);
-                } else {
-                    await this.writeClipboard(settings.value);
-                    await this.simulatePaste();
-                }
+                await outputText(settings.value, settings.pasteMode,
+                    m => streamDeck.logger.warn(m));
             } catch (error) {
                 streamDeck.logger.error("Failed to output stored text:", error);
                 await ev.action.showAlert();
@@ -405,7 +324,7 @@ export class ClipboardSlot extends SingletonAction<SlotSettings> {
             await ev.action.showOk();
         } else {
             // Empty state: Capture clipboard content into slot
-            const clipboardText = await this.readClipboard();
+            const clipboardText = await readClipboard();
 
             if (clipboardText) {
                 // Merge with existing settings to preserve all properties
@@ -473,5 +392,5 @@ type SlotSettings = {
     suppressClear?: boolean;
 
     /** How to output stored text on paste: simulate typing (default) or clipboard paste */
-    pasteMode?: 'typing' | 'clipboard';
+    pasteMode?: PasteMode;
 };

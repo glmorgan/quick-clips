@@ -17,7 +17,8 @@
       "Bash(xcode-select -p)",
       "Bash(security find-identity *)",
       "Bash(xcrun --find notarytool)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(grep -n \"\\\\.hide, \\\\.edit, \\\\.del\\\\|\\\\.del {\\\\|\\\\.del:hover\\\\|\\\\.card:hover \\\\.del\\\\|hide svg\" src/picker.ts)"
     ]
   }
 }

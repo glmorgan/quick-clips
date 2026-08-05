@@ -1,11 +1,11 @@
 import { action, KeyDownEvent, KeyUpEvent, SingletonAction, WillAppearEvent, WillDisappearEvent, DidReceiveSettingsEvent, streamDeck } from "@elgato/streamdeck";
-import { spawn } from "child_process";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { writeFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
-import { applyTransform, escapeForAppleScript, isGenerator } from "../utils.js";
+import { applyTransform, isGenerator } from "../utils.js";
+import { outputText, readClipboard, type PasteMode } from "../typing.js";
 import { findHosts, showPicker, type PickerItem } from "../picker.js";
 
 const execAsync = promisify(exec);
@@ -162,13 +162,16 @@ function buildPickerItems(): PickerItem[] {
 
 type UtilSettings = {
     transform?: TransformType;
-    pasteMode?: 'typing' | 'clipboard';
+    pasteMode?: PasteMode;
 };
 
 @action({ UUID: "com.quickclips.streamdeck.clipboard-utils" })
 export class ClipboardUtils extends SingletonAction<UtilSettings> {
 
     private holdTrackers = new Map<string, { timer: NodeJS.Timeout | null; configMode: boolean }>();
+
+    /** Buttons whose transform picker is on screen; see ClipboardManager.open for why. */
+    private open = new Set<string>();
 
     /**
      * Shows the transform picker, trying each available window host in turn (native, then any
@@ -184,6 +187,7 @@ export class ClipboardUtils extends SingletonAction<UtilSettings> {
                 const chosen = await showPicker(buildPickerItems(), host, {
                     title: 'Quick Text Utils',
                     subtitle: 'Pick what this button should do',
+                    filterPlaceholder: 'Filter transforms…',
                     selectedId: current,
                     onWarn: message => streamDeck.logger.warn(message),
                 });
@@ -225,44 +229,9 @@ return item 1 of chosen`;
         await execAsync(`osascript -e 'display dialog "${message}" buttons {"OK"} default button "OK" with title "Word Count"'`);
     }
 
-    private async readClipboard(): Promise<string> {
-        try {
-            const { stdout } = await execAsync("pbpaste");
-            return stdout;
-        } catch (error) {
-            streamDeck.logger.error("Failed to read clipboard:", error);
-            return "";
-        }
-    }
 
-    private async writeClipboard(text: string): Promise<void> {
-        return new Promise((resolve, reject) => {
-            const proc = spawn("pbcopy");
-            proc.stdin.write(text);
-            proc.stdin.end();
-            proc.on("error", reject);
-            proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`pbcopy exited with code ${code}`)));
-        });
-    }
 
-    private async simulatePaste(): Promise<void> {
-        try {
-            await execAsync('osascript -e \'tell application "System Events" to keystroke "v" using command down\'');
-        } catch (error) {
-            streamDeck.logger.error("Failed to simulate paste:", error);
-        }
-    }
 
-    private async simulateTyping(text: string): Promise<void> {
-        return new Promise((resolve, reject) => {
-            const script = `tell application "System Events" to keystroke "${escapeForAppleScript(text)}"`;
-            const proc = spawn('osascript', ['-']);
-            proc.stdin.write(script);
-            proc.stdin.end();
-            proc.on('error', reject);
-            proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`osascript exited with code ${code}`)));
-        });
-    }
 
     private async updateDisplay(
         ev: WillAppearEvent<UtilSettings> | KeyDownEvent<UtilSettings> | KeyUpEvent<UtilSettings> | DidReceiveSettingsEvent<UtilSettings>,
@@ -282,7 +251,7 @@ return item 1 of chosen`;
     override async onWillAppear(ev: WillAppearEvent<UtilSettings>): Promise<void> {
         const settings = await ev.action.getSettings();
         if (settings.pasteMode === undefined) {
-            await ev.action.setSettings({ ...settings, pasteMode: 'typing' });
+            await ev.action.setSettings({ ...settings, pasteMode: 'auto' });
         }
         await this.updateDisplay(ev, settings);
     }
@@ -322,7 +291,17 @@ return item 1 of chosen`;
         if (tracker?.configMode) {
             // Hold — show picker to reconfigure transform. The picker is pure configuration,
             // so it never touches the clipboard.
-            const chosen = await this.promptTransform(settings.transform);
+            if (this.open.has(ev.action.id)) {
+                streamDeck.logger.info("Picker already open for this button; ignoring the press");
+                return;
+            }
+            this.open.add(ev.action.id);
+            let chosen: TransformType | null;
+            try {
+                chosen = await this.promptTransform(settings.transform);
+            } finally {
+                this.open.delete(ev.action.id);
+            }
             if (chosen) {
                 const newSettings: UtilSettings = { ...settings, transform: chosen };
                 await ev.action.setSettings(newSettings);
@@ -342,7 +321,7 @@ return item 1 of chosen`;
 
         // Generators produce their own value, so an empty clipboard is not an error for them
         const needsClipboard = !isGenerator(settings.transform);
-        const text = needsClipboard ? await this.readClipboard() : '';
+        const text = needsClipboard ? await readClipboard() : '';
         if (needsClipboard && !text) {
             await ev.action.showAlert();
             return;
@@ -356,12 +335,8 @@ return item 1 of chosen`;
 
         const transformed = applyTransform(text, settings.transform);
         try {
-            if ((settings.pasteMode ?? 'typing') === 'typing') {
-                await this.simulateTyping(transformed);
-            } else {
-                await this.writeClipboard(transformed);
-                await this.simulatePaste();
-            }
+            await outputText(transformed, settings.pasteMode,
+                m => streamDeck.logger.warn(m));
         } catch (error) {
             streamDeck.logger.error("Failed to output text:", error);
             await ev.action.showAlert();

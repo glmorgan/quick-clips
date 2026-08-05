@@ -1,5 +1,16 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { applyTransform, escapeForAppleScript, generateLabel, isGenerator } from "./utils.js";
+import {
+    addClip, applyTransform, escapeForAppleScript, generateLabel, isGenerator,
+    markClipUsed, removeClip, restoreClip, updateClip, clipDisplayName, clipRowText, clipSearchText,
+    toggleClipHidden, splitUrl,
+    summarizeClip, detectClipKind,
+    MAX_CLIPS, MAX_CLIP_CHARS, type ClipEntry,
+} from "./utils.js";
+import { isKeystrokeSafe, needsExactPaste, resolvePasteMode } from "./typing.js";
+
+/** Title-only edit, for tests that only care about naming. */
+const retitle = (clips: ClipEntry[], id: string, title: string): ClipEntry[] =>
+    updateClip(clips, id, { title, value: clips.find(c => c.id === id)!.value }).clips;
 
 describe("applyTransform", () => {
     describe("upper", () => {
@@ -202,6 +213,528 @@ describe("escapeForAppleScript", () => {
     });
 });
 
+describe("detectClipKind", () => {
+    const kind = detectClipKind;
+
+    it("parses real JSON objects and arrays", () => {
+        expect(kind('{"a":1}')).toBe("json");
+        expect(kind('[1,2,3]')).toBe("json");
+        expect(kind('  { "nested": { "x": [1] } }  ')).toBe("json");
+    });
+    it("does not badge JSON-looking text that will not parse", () => {
+        // Pattern-matching braces would call this JSON; parsing correctly refuses
+        expect(kind('{ this is not json }')).toBe("text");
+        expect(kind('{"unclosed": 1')).toBe("text");
+    });
+    it("does not badge bare scalars, which are technically valid JSON", () => {
+        expect(kind("123")).toBe("text");
+        expect(kind('"just a string"')).toBe("text");
+        expect(kind("true")).toBe("text");
+    });
+
+    it("detects a whole-value URL", () => {
+        expect(kind("https://example.com/a?b=c")).toBe("url");
+        expect(kind("http://127.0.0.1:8080/x")).toBe("url");
+    });
+    it("treats prose mentioning a URL as text", () => {
+        expect(kind("see https://example.com for details")).toBe("text");
+    });
+
+    it("detects a canonical UUID", () =>
+        expect(kind("4e2562fd-b9b7-4977-9353-85da53cfdf91")).toBe("uuid"));
+    it("accepts uppercase UUIDs", () =>
+        expect(kind("4E2562FD-B9B7-4977-9353-85DA53CFDF91")).toBe("uuid"));
+    it("accepts non-v4 UUIDs, which are still UUIDs", () =>
+        expect(kind("00000000-0000-1000-8000-000000000000")).toBe("uuid"));
+    it("rejects near-misses rather than mislabelling them", () => {
+        expect(kind("4e2562fd-b9b7-4977-9353-85da53cfdf9")).toBe("text");   // too short
+        expect(kind("4e2562fd-b9b7-4977-9353-85da53cfdf911")).toBe("text"); // too long
+        expect(kind("4e2562fdb9b749779353 85da53cfdf91")).toBe("text");     // wrong shape
+        expect(kind("zzzzzzzz-b9b7-4977-9353-85da53cfdf91")).toBe("text");  // not hex
+    });
+    it("treats a sentence containing a UUID as text", () =>
+        expect(kind("id is 4e2562fd-b9b7-4977-9353-85da53cfdf91")).toBe("text"));
+
+    it("detects a JWT by decoding its header", () => {
+        const jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig";
+        expect(kind(jwt)).toBe("jwt");
+    });
+    it("rejects a dotted string that only looks like a JWT", () => {
+        // Right shape, but the header does not decode to JSON with an alg
+        expect(kind("aaa.bbb.ccc")).toBe("text");
+        expect(kind("one.two.three.four")).toBe("text");
+    });
+
+    it("detects hex colours", () => {
+        expect(kind("#fff")).toBe("color");
+        expect(kind("#1e1e1e")).toBe("color");
+        expect(kind("#FF8800CC")).toBe("color");
+    });
+    it("rejects malformed hex colours", () => {
+        expect(kind("#12345")).toBe("text");
+        expect(kind("#gggggg")).toBe("text");
+    });
+
+    it("detects IPv4 and IPv6", () => {
+        expect(kind("192.168.1.10")).toBe("ip");
+        expect(kind("127.0.0.1")).toBe("ip");
+        expect(kind("2001:db8::1")).toBe("ip");
+    });
+    it("rejects out-of-range octets a regex would accept", () =>
+        expect(kind("999.1.1.1")).toBe("text"));
+
+    it("detects ISO dates and timestamps", () => {
+        expect(kind("2026-07-29")).toBe("date");
+        expect(kind("2026-07-29T09:52:44")).toBe("date");
+        expect(kind("2026-07-29T09:52:44.616Z")).toBe("date");
+    });
+    it("rejects impossible calendar dates", () => {
+        expect(kind("2026-13-45")).toBe("text");
+        expect(kind("2026-02-30")).toBe("text");
+        expect(kind("2026-07-29T25:99:00")).toBe("text");
+    });
+    it("treats a log line beginning with a timestamp as text", () =>
+        expect(kind("2026-07-31T13:02:40.616Z WARN picker-host: frame 860x702")).toBe("text"));
+
+    it("detects an email address", () => expect(kind("glen@example.com")).toBe("email"));
+    it("treats a sentence containing an address as text", () =>
+        expect(kind("mail glen@example.com today")).toBe("text"));
+
+    it("detects unix and home paths", () => {
+        expect(kind("/Users/glen/Documents/GitHub/quick-clips")).toBe("path");
+        expect(kind("~/Library/Application Support")).toBe("path");
+    });
+    it("detects a Windows path", () => expect(kind("C:\\Users\\glen\\file.txt")).toBe("path"));
+    it("treats a multi-line blob starting with a slash as text", () =>
+        expect(kind("/one\n/two")).toBe("text"));
+
+    it("falls back to text", () => {
+        expect(kind("The quick brown fox")).toBe("text");
+        expect(kind("")).toBe("text");
+        expect(kind("   ")).toBe("text");
+    });
+});
+
+describe("clip collections", () => {
+    const mk = (value: string, id: string, at = 0): ClipEntry =>
+        ({ id, label: summarizeClip(value), value, addedAt: at });
+
+    describe("summarizeClip", () => {
+        it("collapses whitespace onto one line", () =>
+            expect(summarizeClip("a\n\n  b\tc")).toBe("a b c"));
+        it("marks blank text rather than returning an empty label", () =>
+            expect(summarizeClip("   \n ")).toBe("(blank)"));
+        it("leaves text well past the old 72-char cap intact", () => {
+            // The picker truncates with CSS, which adapts to the window; capping in JS first
+            // just discarded text the row had room for.
+            const s = summarizeClip("x".repeat(200));
+            expect(s).toBe("x".repeat(200));
+            expect(s.endsWith("…")).toBe(false);
+        });
+        it("still truncates pathologically long text", () => {
+            const s = summarizeClip("x".repeat(5000));
+            expect(s.endsWith("…")).toBe(true);
+            expect(s.length).toBeLessThanOrEqual(401);
+        });
+        it("honours an explicit cap", () => {
+            expect(summarizeClip("abcdefghij", 4)).toBe("abcd…");
+        });
+    });
+
+    describe("addClip", () => {
+        it("adds to the front", () => {
+            const r = addClip([mk("old", "1")], "new", "2", 100);
+            expect(r.added).toBe(true);
+            expect(r.clips.map(c => c.value)).toEqual(["new", "old"]);
+        });
+        it("rejects whitespace-only text", () => {
+            const r = addClip([], "  \n ", "1", 0);
+            expect(r).toMatchObject({ added: false, reason: "empty" });
+            expect(r.clips).toHaveLength(0);
+        });
+        it("rejects text over the cap rather than truncating it", () => {
+            // Truncating would paste silently corrupt content later
+            const r = addClip([], "x".repeat(MAX_CLIP_CHARS + 1), "1", 0);
+            expect(r).toMatchObject({ added: false, reason: "too-long" });
+        });
+        it("accepts text exactly at the cap", () => {
+            expect(addClip([], "x".repeat(MAX_CLIP_CHARS), "1", 0).added).toBe(true);
+        });
+        it("moves a duplicate to the front instead of adding a second copy", () => {
+            const clips = [mk("a", "1"), mk("b", "2"), mk("c", "3")];
+            const r = addClip(clips, "c", "new-id", 500);
+            expect(r.clips.map(c => c.value)).toEqual(["c", "a", "b"]);
+            expect(r.clips).toHaveLength(3);
+        });
+        it("preserves a user title when the same value is captured again", () => {
+            // Re-copying something you already named must not silently discard the name
+            const named = retitle(addClip([], "abc", "id1", 1).clips, "id1", "P1 Client Id");
+            const again = addClip(named, "abc", "id2", 2);
+            expect(again.clips).toHaveLength(1);
+            expect(again.clips[0].title).toBe("P1 Client Id");
+        });
+        it("allows two clips to share a title when their values differ", () => {
+            let clips = addClip([], "value-one", "id1", 1).clips;
+            clips = addClip(clips, "value-two", "id2", 2).clips;
+            clips = retitle(clips, "id1", "Client Id");
+            clips = retitle(clips, "id2", "Client Id");
+            expect(clips).toHaveLength(2);
+            expect(clips.map(c => c.title)).toEqual(["Client Id", "Client Id"]);
+            // Distinct ids keep selection, rename and delete unambiguous despite the shared name
+            expect(new Set(clips.map(c => c.id)).size).toBe(2);
+        });
+        it("removes only the intended clip when titles collide", () => {
+            let clips = addClip([], "value-one", "id1", 1).clips;
+            clips = addClip(clips, "value-two", "id2", 2).clips;
+            clips = retitle(clips, "id1", "Same");
+            clips = retitle(clips, "id2", "Same");
+            const left = removeClip(clips, "id1");
+            expect(left).toHaveLength(1);
+            // The survivor is the *other* clip — deletion follows the id, not the shared title
+            expect(left[0].id).toBe("id2");
+            expect(left[0].value).toBe("value-two");
+        });
+        it("keeps the original id when de-duplicating", () => {
+            const r = addClip([mk("a", "keep-me")], "a", "fresh-id", 1);
+            expect(r.clips[0].id).toBe("keep-me");
+        });
+        it("preserves the exact value including whitespace", () => {
+            const raw = "  indented\n\tline  ";
+            expect(addClip([], raw, "1", 0).clips[0].value).toBe(raw);
+        });
+        it("enforces the collection cap, dropping the oldest", () => {
+            let clips: ClipEntry[] = [];
+            for (let i = 0; i < MAX_CLIPS + 10; i++) {
+                clips = addClip(clips, `v${i}`, `id${i}`, i).clips;
+            }
+            expect(clips).toHaveLength(MAX_CLIPS);
+            expect(clips[0].value).toBe(`v${MAX_CLIPS + 9}`);
+            expect(clips.some(c => c.value === "v0")).toBe(false);
+        });
+        it("does not mutate the input array", () => {
+            const clips = [mk("a", "1")];
+            addClip(clips, "b", "2", 0);
+            expect(clips).toHaveLength(1);
+        });
+    });
+
+    describe("updateClip", () => {
+        it("sets a user title", () => {
+            const r = updateClip([mk("4e25-…", "1")], "1", { title: "P1 Client Id", value: "4e25-…" });
+            expect(r.updated).toBe(true);
+            expect(r.clips[0].title).toBe("P1 Client Id");
+        });
+        it("trims surrounding whitespace from the title", () =>
+            expect(updateClip([mk("v", "1")], "1", { title: "  Padded  ", value: "v" }).clips[0].title)
+                .toBe("Padded"));
+        it("clears the title when blank, rather than storing an empty string", () => {
+            const named = updateClip([mk("v", "1")], "1", { title: "Name", value: "v" }).clips;
+            const cleared = updateClip(named, "1", { title: "   ", value: "v" }).clips;
+            expect(cleared[0].title).toBeUndefined();
+        });
+        it("leaves other clips untouched", () => {
+            const r = updateClip([mk("a", "1"), mk("b", "2")], "1", { title: "First", value: "a" });
+            expect(r.clips[1]).toEqual(mk("b", "2"));
+        });
+        it("does not mutate the input", () => {
+            const clips = [mk("a", "1")];
+            updateClip(clips, "1", { title: "Name", value: "changed" });
+            expect(clips[0]).toEqual(mk("a", "1"));
+        });
+
+        it("replaces the text", () => {
+            const r = updateClip([mk("before", "1")], "1", { title: "", value: "after" });
+            expect(r.clips[0].value).toBe("after");
+        });
+        it("regenerates the cached label so the list stops showing the old text", () => {
+            const r = updateClip([mk("before", "1")], "1", { title: "", value: "after" });
+            expect(r.clips[0].label).toBe(summarizeClip("after"));
+            expect(r.clips[0].label).not.toContain("before");
+        });
+        it("keeps id, capture time and masking across an edit", () => {
+            const secret: ClipEntry = { ...mk("old", "s1"), hidden: true, addedAt: 42 };
+            const r = updateClip([secret], "s1", { title: "Key", value: "new" });
+            expect(r.clips[0].id).toBe("s1");
+            expect(r.clips[0].addedAt).toBe(42);
+            expect(r.clips[0].hidden).toBe(true);
+        });
+        it("does not reorder the collection", () => {
+            const clips = [mk("a", "1"), mk("b", "2"), mk("c", "3")];
+            const r = updateClip(clips, "3", { title: "", value: "edited" });
+            expect(r.clips.map(c => c.id)).toEqual(["1", "2", "3"]);
+        });
+        it("preserves whitespace exactly", () => {
+            const raw = "  indented\n\tline  ";
+            expect(updateClip([mk("x", "1")], "1", { title: "", value: raw }).clips[0].value).toBe(raw);
+        });
+
+        it("refuses an unknown id", () => {
+            const r = updateClip([mk("a", "1")], "nope", { title: "X", value: "y" });
+            expect(r.updated).toBe(false);
+            expect(r.reason).toBe("missing");
+        });
+        it("refuses empty text", () => {
+            const r = updateClip([mk("a", "1")], "1", { title: "Name", value: "   \n " });
+            expect(r.updated).toBe(false);
+            expect(r.reason).toBe("empty");
+            expect(r.clips[0].value).toBe("a");
+        });
+        it("refuses text past the cap", () => {
+            const r = updateClip([mk("a", "1")], "1", { title: "", value: "x".repeat(MAX_CLIP_CHARS + 1) });
+            expect(r.updated).toBe(false);
+            expect(r.reason).toBe("too-long");
+        });
+        it("refuses text another clip already holds, which addClip otherwise prevents", () => {
+            const r = updateClip([mk("a", "1"), mk("b", "2")], "1", { title: "", value: "b" });
+            expect(r.updated).toBe(false);
+            expect(r.reason).toBe("duplicate");
+            expect(r.clips.map(c => c.value)).toEqual(["a", "b"]);
+        });
+        it("allows an edit that leaves the text alone, so a title-only change works", () => {
+            const r = updateClip([mk("a", "1"), mk("b", "2")], "1", { title: "Named", value: "a" });
+            expect(r.updated).toBe(true);
+            expect(r.clips[0].title).toBe("Named");
+        });
+        it("allows two clips to share a title when their values differ", () => {
+            let clips = [mk("one", "1"), mk("two", "2")];
+            clips = updateClip(clips, "1", { title: "Same", value: "one" }).clips;
+            clips = updateClip(clips, "2", { title: "Same", value: "two" }).clips;
+            expect(clips.map(c => c.title)).toEqual(["Same", "Same"]);
+        });
+    });
+
+    describe("clipDisplayName", () => {
+        it("prefers the user title", () =>
+            expect(clipDisplayName({ ...mk("some long value", "1"), title: "My Name" })).toBe("My Name"));
+        it("falls back to a summary of the value", () =>
+            expect(clipDisplayName(mk("some long value", "1"))).toBe("some long value"));
+        it("falls back when the title is only whitespace", () =>
+            expect(clipDisplayName({ ...mk("the value", "1"), title: "   " })).toBe("the value"));
+    });
+
+    describe("splitUrl", () => {
+        it("splits host from path", () =>
+            expect(splitUrl("https://github.com/glmorgan/quick-clips"))
+                .toEqual({ host: "github.com", rest: "/glmorgan/quick-clips" }));
+        it("keeps the port, which distinguishes local services", () =>
+            expect(splitUrl("http://localhost:8080/admin")?.host).toBe("localhost:8080"));
+        it("keeps query and fragment", () =>
+            expect(splitUrl("https://x.com/a?b=c#d")?.rest).toBe("/a?b=c#d"));
+        it("treats a bare root path as no remainder", () =>
+            expect(splitUrl("https://example.com/")).toEqual({ host: "example.com", rest: "" }));
+        it("returns null for non-URLs", () => {
+            expect(splitUrl("not a url")).toBeNull();
+            expect(splitUrl("see https://example.com for details")).toBeNull();
+            expect(splitUrl("/Users/glen/docs")).toBeNull();
+        });
+    });
+
+    describe("clipRowText", () => {
+        it("uses the host as the name for an unnamed URL", () => {
+            const r = clipRowText(mk("https://github.com/glmorgan/quick-clips", "1"));
+            expect(r).toEqual({ label: "github.com", detail: "/glmorgan/quick-clips" });
+        });
+        it("shows no detail for a bare host", () =>
+            expect(clipRowText(mk("https://example.com", "1")))
+                .toEqual({ label: "example.com", detail: undefined }));
+        it("lets a user title override the derived host", () => {
+            const clip = { ...mk("https://github.com/a", "1"), title: "Repo" };
+            expect(clipRowText(clip).label).toBe("Repo");
+            expect(clipRowText(clip).detail).toBe("https://github.com/a");
+        });
+        it("falls back to the value for non-URLs", () =>
+            expect(clipRowText(mk("plain text here", "1")))
+                .toEqual({ label: "plain text here", detail: undefined }));
+    });
+
+    describe("hiding", () => {
+        const secret = () => ({ ...mk("sk_live_abcdef123456", "1"), title: "Stripe Key" });
+
+        it("toggles on and off", () => {
+            const on = toggleClipHidden([secret()], "1");
+            expect(on[0].hidden).toBe(true);
+            expect(toggleClipHidden(on, "1")[0].hidden).toBeUndefined();
+        });
+        it("does not mutate the input", () => {
+            const clips = [secret()];
+            toggleClipHidden(clips, "1");
+            expect(clips[0].hidden).toBeUndefined();
+        });
+        it("never alters the value — masking is display only", () => {
+            const on = toggleClipHidden([secret()], "1");
+            expect(on[0].value).toBe("sk_live_abcdef123456");
+        });
+
+        it("masks the value in the row, keeping the name", () => {
+            const row = clipRowText({ ...secret(), hidden: true });
+            expect(row.label).toBe("Stripe Key");
+            expect(row.detail).not.toContain("sk_live");
+            expect(row.detail).toMatch(/^•+$/);
+        });
+        it("masks the label too when the clip has no name", () => {
+            const row = clipRowText({ ...mk("sk_live_abcdef123456", "1"), hidden: true });
+            expect(row.label).not.toContain("sk_live");
+            expect(row.label).toMatch(/^•+$/);
+        });
+        it("uses a fixed-width mask, so the value length does not leak", () => {
+            const short = clipRowText({ ...mk("abc", "1"), hidden: true }).label;
+            const long = clipRowText({ ...mk("a".repeat(400), "2"), hidden: true }).label;
+            expect(short).toBe(long);
+        });
+
+        it("excludes a hidden value from the search text", () => {
+            const text = clipSearchText({ ...secret(), hidden: true });
+            expect(text).toBe("Stripe Key");
+            expect(text).not.toContain("sk_live");
+        });
+        it("includes the value when not hidden", () =>
+            expect(clipSearchText(secret())).toContain("sk_live_abcdef123456"));
+    });
+
+    describe("removeClip", () => {
+        it("removes by id", () =>
+            expect(removeClip([mk("a", "1"), mk("b", "2")], "1").map(c => c.value)).toEqual(["b"]));
+        it("ignores unknown ids", () =>
+            expect(removeClip([mk("a", "1")], "nope")).toHaveLength(1));
+    });
+
+    describe("restoreClip", () => {
+        const three = () => [mk("a", "1"), mk("b", "2"), mk("c", "3")];
+
+        it("puts the clip back at the index it was deleted from", () => {
+            const clips = three();
+            const gone = clips[1];
+            const after = removeClip(clips, "2");
+            const r = restoreClip(after, gone, 1);
+            expect(r.restored).toBe(true);
+            expect(r.clips.map(c => c.value)).toEqual(["a", "b", "c"]);
+        });
+        it("restores the entry unchanged, including its title and hidden flag", () => {
+            const secret: ClipEntry = { ...mk("sk_live_x", "s1"), title: "Stripe", hidden: true };
+            const r = restoreClip([], secret, 0);
+            expect(r.clips[0]).toEqual(secret);
+        });
+        it("clamps an index past the end of a list that shrank meanwhile", () => {
+            const gone = mk("z", "9");
+            const r = restoreClip([mk("a", "1")], gone, 7);
+            expect(r.clips.map(c => c.value)).toEqual(["a", "z"]);
+        });
+        it("still lands at the front when the deleted clip was first", () => {
+            const clips = three();
+            const r = restoreClip(removeClip(clips, "1"), clips[0], 0);
+            expect(r.clips.map(c => c.value)).toEqual(["a", "b", "c"]);
+        });
+        it("does not mutate the list it was given", () => {
+            const after = [mk("a", "1")];
+            restoreClip(after, mk("b", "2"), 0);
+            expect(after).toHaveLength(1);
+        });
+        it("refuses a second undo of the same clip", () => {
+            const clips = three();
+            const restored = restoreClip(removeClip(clips, "2"), clips[1], 1);
+            const again = restoreClip(restored.clips, clips[1], 1);
+            expect(again.restored).toBe(false);
+            expect(again.reason).toBe("duplicate");
+            expect(again.clips).toHaveLength(3);
+        });
+        it("refuses when the same text was captured again under a new id", () => {
+            const gone = mk("shared-text", "old");
+            const readded = addClip([], "shared-text", "new", 1).clips;
+            const r = restoreClip(readded, gone, 0);
+            expect(r.restored).toBe(false);
+            expect(r.reason).toBe("duplicate");
+        });
+        it("refuses rather than pushing out the oldest clip when full", () => {
+            let clips: ClipEntry[] = [];
+            for (let i = 0; i < MAX_CLIPS; i++) clips = addClip(clips, `v${i}`, `id${i}`, i).clips;
+            const r = restoreClip(clips, mk("restored", "extra"), 0);
+            expect(r.restored).toBe(false);
+            expect(r.reason).toBe("full");
+            // The clip that would have been evicted is still there
+            expect(r.clips).toHaveLength(MAX_CLIPS);
+            expect(r.clips.some(c => c.value === "v0")).toBe(true);
+        });
+    });
+
+    describe("markClipUsed", () => {
+        it("records the time without moving the clip", () => {
+            const clips = [mk("a", "1"), mk("b", "2"), mk("c", "3")];
+            const after = markClipUsed(clips, "3", 999);
+            expect(after.map(c => c.id)).toEqual(["1", "2", "3"]);
+            expect(after[2].lastUsedAt).toBe(999);
+        });
+        it("leaves the other clips untouched", () => {
+            const after = markClipUsed([mk("a", "1"), mk("b", "2")], "1", 5);
+            expect(after[1].lastUsedAt).toBeUndefined();
+        });
+        it("ignores unknown ids", () =>
+            expect(markClipUsed([mk("a", "1")], "nope", 5)[0].lastUsedAt).toBeUndefined());
+        it("does not mutate the input", () => {
+            const clips = [mk("a", "1")];
+            markClipUsed(clips, "1", 5);
+            expect(clips[0].lastUsedAt).toBeUndefined();
+        });
+    });
+
+    describe("markClipUsed and re-capture", () => {
+        it("keeps the usage time when the same text is captured again", () => {
+            // The dedupe path rebuilds the entry, which is where the field could quietly be lost
+            const used = markClipUsed(addClip([], "shared", "id1", 1).clips, "id1", 5_000);
+            const again = addClip(used, "shared", "id2", 9_000);
+            expect(again.clips).toHaveLength(1);
+            expect(again.clips[0].id).toBe("id1");
+            expect(again.clips[0].lastUsedAt).toBe(5_000);
+        });
+    });
+
+    describe("eviction at the cap", () => {
+        /** A full collection, oldest-added last, where the oldest-added is also the most used. */
+        const full = (): ClipEntry[] => {
+            let clips: ClipEntry[] = [];
+            for (let i = 0; i < MAX_CLIPS; i++) clips = addClip(clips, `v${i}`, `id${i}`, i).clips;
+            return clips;
+        };
+        it("drops the least recently used, not merely the oldest", () => {
+            // id0 was added first but is used constantly; id1 was added next and never touched.
+            const clips = markClipUsed(full(), "id0", 10_000);
+            const after = addClip(clips, "fresh", "new", 99_999).clips;
+            expect(after).toHaveLength(MAX_CLIPS);
+            expect(after.some(c => c.id === "id0")).toBe(true);
+            expect(after.some(c => c.id === "id1")).toBe(false);
+        });
+        it("falls back to capture time for clips never pasted", () => {
+            const after = addClip(full(), "fresh", "new", 99_999).clips;
+            // Nothing has a lastUsedAt, so the earliest captured goes
+            expect(after.some(c => c.id === "id0")).toBe(false);
+            expect(after.some(c => c.id === "id1")).toBe(true);
+        });
+        it("never evicts the clip just captured", () => {
+            const after = addClip(full(), "fresh", "new", 0).clips;
+            expect(after[0].value).toBe("fresh");
+        });
+        it("keeps every surviving clip in its existing position", () => {
+            const before = markClipUsed(full(), "id0", 10_000);
+            const after = addClip(before, "fresh", "new", 99_999).clips;
+            const survivors = before.filter(c => c.id !== "id1").map(c => c.id);
+            expect(after.slice(1).map(c => c.id)).toEqual(survivors);
+        });
+    });
+});
+
+describe("isKeystrokeSafe", () => {
+    it("accepts plain ASCII", () => expect(isKeystrokeSafe("hello world 123 !@#")).toBe(true));
+    // Newlines vanish and tabs move focus under AppleScript, despite both being ASCII
+    it("rejects newlines", () => expect(isKeystrokeSafe("a\nb")).toBe(false));
+    it("rejects carriage returns", () => expect(isKeystrokeSafe("a\r\nb")).toBe(false));
+    it("rejects tabs", () => expect(isKeystrokeSafe("a\tb")).toBe(false));
+    it("rejects arrows", () => expect(isKeystrokeSafe("a → b")).toBe(false));
+    it("rejects accented letters", () => expect(isKeystrokeSafe("café")).toBe(false));
+    it("rejects em dashes", () => expect(isKeystrokeSafe("a—b")).toBe(false));
+    it("rejects emoji", () => expect(isKeystrokeSafe("party 🎉")).toBe(false));
+    it("rejects CJK", () => expect(isKeystrokeSafe("日本語")).toBe(false));
+    it("accepts an empty string", () => expect(isKeystrokeSafe("")).toBe(true));
+});
+
 describe("generateLabel", () => {
     it("returns short text as-is", () => expect(generateLabel("hello")).toBe("hello"));
     it("fits exactly 7 chars on one line", () => expect(generateLabel("1234567")).toBe("1234567"));
@@ -215,4 +748,38 @@ describe("generateLabel", () => {
         expect(lines[0].length).toBeLessThanOrEqual(7);
     });
     it("collapses whitespace", () => expect(generateLabel("  hello   world  ")).toBe("hello\nworld"));
+});
+
+describe("paste mode", () => {
+    describe("needsExactPaste", () => {
+        it("is false for ordinary one-line text", () =>
+            expect(needsExactPaste("postgres://user:pw@localhost:5432/appdb")).toBe(false));
+        it("is false for single-line JSON", () =>
+            expect(needsExactPaste('{"a":1,"b":[2,3]}')).toBe(false));
+        it("is false for text with unicode, which types fine", () =>
+            expect(needsExactPaste("café 🎉 日本語")).toBe(false));
+        // Return and Tab are keys before they are characters
+        it("is true for a newline", () => expect(needsExactPaste("line one\nline two")).toBe(true));
+        it("is true for a carriage return", () => expect(needsExactPaste("a\r\nb")).toBe(true));
+        it("is true for a tab", () => expect(needsExactPaste("key\tvalue")).toBe(true));
+        it("is true for pretty-printed JSON", () =>
+            expect(needsExactPaste('{\n  "a": 1\n}')).toBe(true));
+        it("is false for empty text", () => expect(needsExactPaste("")).toBe(false));
+    });
+
+    describe("resolvePasteMode", () => {
+        it("types one-line text when unset", () =>
+            expect(resolvePasteMode(undefined, "hello")).toBe("typing"));
+        it("pastes multi-line text when unset", () =>
+            expect(resolvePasteMode(undefined, "a\nb")).toBe("clipboard"));
+        it("treats auto the same as unset", () => {
+            expect(resolvePasteMode("auto", "hello")).toBe("typing");
+            expect(resolvePasteMode("auto", "a\nb")).toBe("clipboard");
+        });
+        // An explicit choice is never second-guessed, in either direction
+        it("honours an explicit typing choice for multi-line text", () =>
+            expect(resolvePasteMode("typing", "a\nb")).toBe("typing"));
+        it("honours an explicit clipboard choice for one-line text", () =>
+            expect(resolvePasteMode("clipboard", "hello")).toBe("clipboard"));
+    });
 });

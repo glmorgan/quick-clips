@@ -24,10 +24,47 @@ export type PickerItem = {
     id: string;
     label: string;
     group: string;
-    /** Path to a PNG relative to the sdPlugin root, e.g. `imgs/actions/utils/upper`. */
-    icon: string;
+    /**
+     * Path to a PNG relative to the sdPlugin root, e.g. `imgs/actions/utils/upper`.
+     * Optional: stored clips have no per-item art.
+     */
+    icon?: string;
+    /** Secondary line under the label — the clip's text, or a generated sample. */
+    preview?: string;
+    /**
+     * The user-set name, when there is one. Distinct from `label`, which may be a derived
+     * summary — the editor must open with what the user typed, not with generated text.
+     */
+    title?: string;
+    /** Whether this row is currently masked, so the control can show the right state. */
+    hidden?: boolean;
+    /**
+     * Exactly what the filter should match, when the visible text is not the whole story — a
+     * named row displays its name but should still be findable by its value, and a masked row
+     * must *not* be findable by the value it is hiding. Falls back to the label.
+     */
+    search?: string;
     /** Hex accent used for the selected-card outline; should match the icon's own accent bar. */
     accent?: string;
+    /**
+     * Short computed tag shown at the start of the row, e.g. "JSON" or "URL". Rendered in a
+     * fixed-width slot so the badges line up into a scannable column.
+     */
+    badge?: {
+        text: string;
+        accent?: string;
+        /**
+         * Renders the badge slot as a filled colour chip instead of a label. Only a literal hex
+         * colour is honoured — see the sanitising in renderHtml.
+         */
+        swatch?: string;
+        /**
+         * Extra words the filter should match, so a row can be found by its *kind* and not only
+         * its contents — typing "json" finds JSON clips, not clips mentioning the word. Needed
+         * especially for a swatch, which displays no text at all to match against.
+         */
+        search?: string;
+    };
 };
 
 export type PickerOptions = {
@@ -40,7 +77,92 @@ export type PickerOptions = {
      * setting rather than the top of the list. Unknown ids fall back to the first item.
      */
     selectedId?: string;
-    /** Abandon the picker and resolve `null` after this many ms. */
+    /**
+     * Rows that perform an operation instead of selecting, e.g. "Add from clipboard".
+     * Choosing one leaves the window open so the result is visible.
+     */
+    actions?: { id: string; label: string; hint?: string }[];
+    /**
+     * Handles an action row. Returns the updated item list, which the picker re-renders.
+     * Keeping this a callback leaves clipboard and settings logic in the action, not here.
+     */
+    onAction?: (actionId: string) => Promise<PickerItem[]>;
+    /**
+     * Deletes an item. Supplying this puts a delete control on every row and binds the Delete
+     * key; omit it and the picker stays read-only. Returns the updated list to re-render.
+     */
+    onDelete?: (itemId: string) => Promise<PickerItem[]>;
+    /**
+     * Restores whatever `onDelete` last removed. Supplying this turns the post-delete notice into
+     * an Undo affordance and binds ⌘Z to it; omit it and a delete is final.
+     *
+     * Returns the updated list to re-render, or throws with a reason the restore could not
+     * happen, which the picker shows in place of the notice.
+     */
+    onUndoDelete?: () => Promise<PickerItem[]>;
+    /**
+     * Edits an item's name and text together. Supplying this puts a pencil on every row, binds
+     * F2, and expands the row into an editor when either is used. An empty title means "clear
+     * the name"; throw to explain why an edit could not be applied.
+     *
+     * Editing happens inline rather than via `prompt()`, which silently does nothing in the
+     * native host unless the web view implements a text-input panel.
+     */
+    onEdit?: (itemId: string, title: string, value: string) => Promise<PickerItem[]>;
+    /**
+     * Supplies an item's full text when the editor opens. Required alongside {@link onEdit},
+     * because a {@link PickerItem} carries only a truncated preview — and nothing at all for a
+     * masked item.
+     *
+     * Fetched on demand rather than embedded in every row: it keeps whole collections out of the
+     * page, and a hidden item's text out of the DOM until that row is deliberately opened.
+     */
+    onReadValue?: (itemId: string) => Promise<string>;
+    /**
+     * Toggles whether an item's value is masked on screen. Supplying this puts a hide control on
+     * every row. Masking is the caller's job — the picker only renders what it is given and
+     * reports the toggle.
+     */
+    onToggleHidden?: (itemId: string) => Promise<PickerItem[]>;
+    /**
+     * Whether the caller will type or paste immediately after a selection. When true the
+     * picker waits for the window to close *and* for focus to land back on a real app before
+     * resolving; otherwise keystrokes race the closing window. Off by default because the
+     * transform picker only writes settings.
+     */
+    awaitFocusHandoff?: boolean;
+    /**
+     * `grid` packs short labelled items into columns — right for transforms, which are terse
+     * and carry icons. `list` gives each row the full width, which long stored text needs to
+     * stay readable rather than truncating a few characters in.
+     */
+    layout?: "grid" | "list";
+    /**
+     * Appends a running total to each group heading, e.g. "CLIPS (12)".
+     *
+     * Off by default: it earns its place for a collection that grows and shrinks, and reads as
+     * noise on a fixed menu like the transform groups.
+     */
+    showGroupCounts?: boolean;
+    /**
+     * Numbers the visible rows and binds Cmd+1..9 to pick one directly.
+     *
+     * The modifier is not optional: the filter field owns the keyboard, and stored text is full
+     * of digits (ports, ids, dates, hex colours), so a bare number would paste a row instead of
+     * filtering for it — and a selection types into whatever app is frontmost, which nothing can
+     * take back.
+     */
+    quickSelect?: boolean;
+    /** Placeholder for the filter field; defaults to a generic prompt. */
+    filterPlaceholder?: string;
+    /**
+     * Content-area size. Per-caller because the two pickers want different shapes: the transform
+     * grid needs width to hold four columns without scrolling, while a list of clips mostly has
+     * short rows and reads better narrower.
+     */
+    width?: number;
+    height?: number;
+    /** Abandon the picker and resolve `null` after this many ms *without interaction*. */
     timeoutMs?: number;
     /**
      * Diagnostic channel: unservable assets, and anything the window host writes to stderr
@@ -69,6 +191,12 @@ const BROWSER_CANDIDATES = [
     "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
 ];
 
+/**
+ * How long the picker may sit *idle* before giving up and closing.
+ *
+ * Re-armed on every interaction, so it bounds abandonment rather than the whole session — an
+ * absolute limit would close the window mid-task on anyone working through a list.
+ */
 const DEFAULT_TIMEOUT_MS = 60_000;
 /**
  * How long a host gets to fetch the page before it is judged to have failed.
@@ -152,6 +280,39 @@ export async function findHosts(): Promise<string[]> {
     return hosts;
 }
 
+/**
+ * Waits until a real application is frontmost again after the picker window closes.
+ *
+ * Measured on a real click: the host exits ~19ms after the selection, but focus passes through
+ * a brief state where no app is frontmost and only lands on the previous app at ~32ms. Typing
+ * inside that gap goes nowhere, or worse into the closing window — so callers that paste must
+ * wait for the handoff rather than for the selection alone. Polls observed state instead of
+ * sleeping a guessed constant, so it still holds on a slower machine.
+ */
+async function waitForFocusHandoff(timeoutMs = 500): Promise<void> {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const run = promisify(execFile);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            const { stdout } = await run("lsappinfo", ["front"]);
+            const asn = stdout.trim();
+            if (asn) {
+                const { stdout: name } = await run("lsappinfo", ["info", "-only", "name", asn]);
+                // "[ NULL ]" is the transient no-frontmost-app state while the window closes.
+                if (name.includes("=") && !name.includes("NULL") && !name.includes("picker-host")) {
+                    return;
+                }
+            }
+        } catch {
+            // lsappinfo unavailable — do not block the paste on a diagnostic tool
+            return;
+        }
+        await new Promise(r => setTimeout(r, 20));
+    }
+}
+
 /** Escapes text for safe interpolation into an HTML text node or attribute. */
 function escapeHtml(text: string): string {
     return text
@@ -172,31 +333,119 @@ function embedJson(value: unknown): string {
 
 const DEFAULT_ACCENT = "#6d9eeb";
 
+/**
+ * Eye / eye-with-slash for the hide toggle.
+ *
+ * Inline SVG rather than a Unicode glyph: the eye emoji renders in colour and ignores the
+ * surrounding text colour, and Unicode has no dependable struck-through eye at all. `currentColor`
+ * lets the existing contrast rules drive these the same as the other controls.
+ */
+const EYE_SVG =
+    `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"`
+    + ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">`
+    + `<path d="M2 12c3-5.5 6.7-8 10-8s7 2.5 10 8c-3 5.5-6.7 8-10 8s-7-2.5-10-8Z"/>`
+    + `<circle cx="12" cy="12" r="3.2"/></svg>`;
+
+const PENCIL_SVG =
+    `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"`
+    + ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">`
+    + `<path d="M4 20.5l4.2-1L20 7.7a2.1 2.1 0 0 0-3-3L5 16.4 4 20.5Z"/>`
+    + `<path d="M14.8 6.9l2.9 2.9"/></svg>`;
+
+// Heavier stroke than the other two: a cross is two thin diagonals, which lay down less ink
+// than the eye's curves or the pencil's body and so read lighter at the same colour.
+const CROSS_SVG =
+    `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"`
+    + ` stroke-width="2.4" stroke-linecap="round" aria-hidden="true">`
+    + `<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>`;
+
+const EYE_OFF_SVG =
+    `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"`
+    + ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">`
+    + `<path d="M2 12c3-5.5 6.7-8 10-8s7 2.5 10 8c-3 5.5-6.7 8-10 8s-7-2.5-10-8Z"/>`
+    + `<circle cx="12" cy="12" r="3.2"/>`
+    + `<path d="M3.5 3.5l17 17"/></svg>`;
+
+/** Hex colours only. The value originates from the user's clipboard and lands in a style
+ * attribute, so it is re-validated here rather than trusted from the caller. */
+const HEX_COLOUR = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
+function renderBadge(badge: PickerItem["badge"]): string {
+    if (!badge) return "";
+    // A swatch shows the colour itself, which a text label cannot. Deliberately a *filled* chip
+    // with a neutral ring rather than tinted text: a near-black or near-white value would be
+    // invisible if the colour were used for the border or glyph.
+    if (badge.swatch && HEX_COLOUR.test(badge.swatch)) {
+        return `<span class="badge swatch" title="${escapeHtml(badge.swatch)}"`
+            + ` style="--swatch:${escapeHtml(badge.swatch)}"></span>`;
+    }
+    return `<span class="badge" style="--badge:${escapeHtml(badge.accent ?? "#8b8b93")}">`
+        + `${escapeHtml(badge.text)}</span>`;
+}
+
 function renderHtml(
     items: PickerItem[],
     token: string,
     options: Required<Pick<PickerOptions, "title">> & PickerOptions,
     theme: "auto" | "dark" | "light"
 ): string {
-    const { title, subtitle, selectedId } = options;
+    const winW = options.width ?? WINDOW_WIDTH;
+    const winH = options.height ?? WINDOW_HEIGHT;
+    const { title, subtitle, selectedId, actions } = options;
+    const layout = options.layout ?? "grid";
 
     const groups = [...new Set(items.map(i => i.group))];
     const sections = groups.map(group => {
         const cards = items
             .filter(i => i.group === group)
             .map(item => `
-        <button class="card${item.id === selectedId ? " is-current" : ""}" role="option"
+        <div class="card${item.id === selectedId ? " is-current" : ""}" role="option" tabindex="-1"
                 data-id="${escapeHtml(item.id)}"
                 data-label="${escapeHtml(item.label)}"
-                data-search="${escapeHtml((item.label + " " + item.group).toLowerCase())}"
+                data-title="${escapeHtml(item.title ?? "")}"
+                data-search="${escapeHtml(
+                    [item.search ?? item.label, item.group,
+                     item.badge?.search ?? item.badge?.text ?? ""]
+                        .join(" ").toLowerCase()
+                )}"
                 ${item.id === selectedId ? 'title="Currently set on this button"' : ""}
                 style="--accent:${escapeHtml(item.accent ?? DEFAULT_ACCENT)}">
-          <img class="icon" src="/icon?t=${token}&p=${encodeURIComponent(item.icon)}" alt="" />
-          <span class="label">${escapeHtml(item.label)}</span>
-        </button>`)
+          ${item.icon ? `<img class="icon" src="/icon?t=${token}&p=${encodeURIComponent(item.icon)}" alt="" />` : ""}
+          ${renderBadge(item.badge)}
+          <span class="text${item.preview ? " has-detail" : ""}">
+            <span class="label">${escapeHtml(item.label)}</span>
+            ${item.preview ? `<span class="preview">${escapeHtml(item.preview)}</span>` : ""}
+          </span>
+          ${options.quickSelect ? `<span class="num" aria-hidden="true"></span>` : ""}
+          ${(options.onToggleHidden || options.onEdit || options.onDelete)
+            ? `<span class="controls">` : ""}
+          ${options.onToggleHidden ? `<span class="hide${item.hidden ? " on" : ""}" role="button"`
+            + ` title="${item.hidden ? "Show value" : "Hide value from view (not encrypted)"}">`
+            + (item.hidden ? EYE_OFF_SVG : EYE_SVG) + `</span>` : ""}
+          ${options.onEdit ? `<span class="edit" role="button" title="Edit name and text (or press F2)">` + PENCIL_SVG + `</span>` : ""}
+          ${options.onDelete ? `<span class="del" role="button" title="Delete this clip">` + CROSS_SVG + `</span>` : ""}
+          ${(options.onToggleHidden || options.onEdit || options.onDelete) ? `</span>` : ""}
+        </div>`)
             .join("");
-        return `<section><h2>${escapeHtml(group)}</h2><div class="grid">${cards}</div></section>`;
+        // The tally is left empty here and filled by paint(). Rendering it server-side would go
+        // stale the moment a row is deleted, because a delete removes the node in place rather
+        // than re-rendering the page.
+        const tally = options.showGroupCounts ? `<span class="tally"></span>` : "";
+        return `<section><h2>${escapeHtml(group)}${tally}</h2>`
+            + `<div class="grid">${cards}</div></section>`;
     }).join("");
+
+    // Action rows come first so an empty collection still offers something to do.
+    const actionSection = (actions ?? []).length === 0 ? "" : `
+    <section><div class="grid">${(actions ?? []).map(a => `
+      <div class="card is-action" role="option" tabindex="-1" data-action="${escapeHtml(a.id)}"
+           data-label="${escapeHtml(a.label)}" data-search="">
+        <span class="plus">+</span>
+        <span class="text">
+          <span class="label">${escapeHtml(a.label)}</span>
+          ${a.hint ? `<span class="preview">${escapeHtml(a.hint)}</span>` : ""}
+        </span>
+      </div>`).join("")}</div></section>`;
 
     // Light tokens are declared twice: once behind the media query (the `auto` default) and
     // once behind [data-theme="light"], so an explicit override beats the OS in both directions.
@@ -217,7 +466,7 @@ function renderHtml(
       --glyph: brightness(.24) saturate(0);`;
 
     return `<!doctype html>
-<html lang="en"${theme === "auto" ? "" : ` data-theme="${theme}"`}>
+<html lang="en" data-layout="${layout}"${theme === "auto" ? "" : ` data-theme="${theme}"`}>
 <head>
 <meta charset="utf-8" />
 <title>${escapeHtml(title)}</title>
@@ -233,7 +482,7 @@ function renderHtml(
  * reads as an empty themed window rather than a white flash.
  */
 (function () {
-  var W = ${WINDOW_WIDTH}, H = ${WINDOW_HEIGHT};
+  var W = ${winW}, H = ${winH};
   var root = document.documentElement;
   var revealed = false;
   function reveal() {
@@ -322,7 +571,7 @@ function renderHtml(
     background: var(--header);
     backdrop-filter: saturate(180%) blur(20px);
     border-bottom: 1px solid var(--line);
-    padding: 18px 0 0;
+    padding: 12px 0 0;
   }
   .titles { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
   h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.015em; }
@@ -330,7 +579,7 @@ function renderHtml(
 
   .searchbar {
     display: flex; align-items: center; gap: 9px;
-    margin: 12px 0 0; padding: 0 0 13px;
+    margin: 7px 0 0; padding: 0 0 9px;
   }
   .searchbar svg { flex: 0 0 15px; color: var(--fg-faint); }
   #q {
@@ -339,36 +588,80 @@ function renderHtml(
   }
   #q::placeholder { color: var(--fg-faint); }
   #count { flex: 0 0 auto; font-size: 11px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+  /*
+   * Shown only once there is something to clear.
+   *
+   * Hidden with visibility rather than display, so its box stays reserved and nothing moves as
+   * it comes and goes: the button is taller than the input's line box, so removing it from flow
+   * shrank the whole search bar, and shifted the match count sideways.
+   *
+   * The state is a class set by applyFilter() rather than a :placeholder-shown sibling rule.
+   * Chrome does not invalidate that selector when the field's value changes programmatically —
+   * measured: the selector matched nothing while the computed style stayed hidden, even after a
+   * forced reflow. applyFilter() is the single point every path goes through, so a class cannot
+   * drift out of step either.
+   */
+  #clear {
+    flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+    width: 20px; height: 20px; border-radius: 5px; cursor: pointer; color: var(--fg-faint);
+    transition: background 110ms ease, color 110ms ease;
+  }
+  #clear svg { display: block; }
+  #clear:hover { background: var(--kbd); color: var(--fg-dim); }
+  #clear.is-empty { visibility: hidden; pointer-events: none; }
 
-  main { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 4px 0 18px; }
+  main { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 2px 0 12px; }
   main::-webkit-scrollbar { width: 10px; }
   main::-webkit-scrollbar-thumb {
     background: var(--kbd); border-radius: 99px;
     border: 3px solid transparent; background-clip: content-box;
   }
 
-  section { margin-top: 16px; }
+  section { margin-top: 11px; }
   section.hidden { display: none; }
   h2 {
-    margin: 0 0 8px; font-size: 10px; font-weight: 700; letter-spacing: .08em;
+    margin: 0 0 5px; font-size: 10px; font-weight: 700; letter-spacing: .08em;
     text-transform: uppercase; color: var(--fg-faint);
   }
+  /* Lighter than the heading it follows: it is a detail about the group, not part of its name. */
+  .tally { margin-left: 5px; font-weight: 600; opacity: .72; font-variant-numeric: tabular-nums; }
 
   .grid {
     display: grid; gap: 9px;
     grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   }
+  /* One row per item, full width — long stored text is unreadable in narrow columns. */
+  html[data-layout="list"] .grid { grid-template-columns: 1fr; gap: 5px; }
 
   .card {
     position: relative; display: flex; align-items: center; gap: 10px;
-    padding: 11px 12px; min-width: 0;
+    padding: 8px 12px; min-width: 0;
     border: 2px solid var(--card-line); border-radius: 11px;
     background: var(--card); color: inherit; text-align: left;
     font: inherit; cursor: pointer; box-shadow: var(--shadow);
+    /* Rows were <button> elements until an <input> had to live inside one: nesting interactive
+       controls in a button is invalid, and the browser routes Space and Enter to the button,
+       so typing a label with a space in it selected the row and pasted it. */
+    outline: none; user-select: none;
     transition: border-color 110ms ease, box-shadow 110ms ease, transform 110ms ease, background 110ms ease;
   }
   .card.hidden { display: none; }
   .card:hover { background: var(--hover); }
+  /*
+   * A deleted row collapses rather than vanishing, so the rows below slide up instead of
+   * jumping. Everything that occupies vertical space has to go with it — padding and border as
+   * well as height — or the row leaves a 20px ghost behind. The 5px grid gap is the exception;
+   * it cannot be reached from here and snaps closed at the end, which at 5px is imperceptible.
+   *
+   * The height itself is driven inline from JS, because it has to start from a measured pixel
+   * value: auto does not transition. Pointer events are dropped so a row on its way out cannot
+   * be clicked; it has already left the card list, so nothing else can reach it either.
+   */
+  .card.leaving {
+    overflow: hidden; opacity: 0; pointer-events: none;
+    padding-top: 0; padding-bottom: 0; border-top-width: 0; border-bottom-width: 0;
+    transition: height 150ms ease, padding 150ms ease, border-width 150ms ease, opacity 110ms ease;
+  }
   /*
    * Marks the transform the button is already set to. Stays in the item's accent colour
    * regardless of cursor position — the selection ring moves as you navigate, so this is the
@@ -391,11 +684,166 @@ function renderHtml(
   /* Icons are shown exactly as they appear on the Stream Deck key — no tint, no container. */
   .icon { flex: 0 0 30px; width: 30px; height: 30px; object-fit: contain; display: block; filter: var(--glyph); }
 
+  /*
+   * Label and preview sit on one line rather than stacking, so a row is the same height whether
+   * or not it has been given a name. Stacking made named rows taller and left the list with a
+   * ragged rhythm; padding the short rows to match would have wasted the space on every
+   * unnamed row instead.
+   */
+  .text { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1 1 auto; }
+  .preview {
+    flex: 1 1 auto; min-width: 0;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 10.5px; color: var(--fg-dim); letter-spacing: -.01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Action rows read as "do something" rather than "pick something". */
+  .card.is-action { border-style: dashed; }
+  .card.is-action .label { color: var(--fg-dim); }
+  .card.is-action:hover, .card.is-action.active { border-style: solid; }
+  .card.is-action:hover .label, .card.is-action.active .label { color: var(--fg); }
+  .plus {
+    flex: 0 0 30px; width: 30px; height: 30px; display: grid; place-items: center;
+    border-radius: 8px; background: var(--kbd); color: var(--fg-dim); font-size: 17px;
+  }
+  /*
+   * Deleting is click-only, deliberately. Every keyboard binding collided with editing the
+   * filter, which is focused by default: a bare Backspace fired the moment a search term was
+   * cleared, and Cmd+Backspace is macOS's own "delete to beginning of line". A small, specific
+   * target is inherently deliberate in a way a keystroke is not.
+   *
+   * Always visible rather than revealed on hover: a control you cannot see is a control you do
+   * not know exists, and a hover-only target on a full-width row is easy to miss entirely.
+   * Sized generously for the same reason — the glyph is small but the hit area is not.
+   */
+  /*
+   * Fixed width so badges form an aligned column — the point is scanning a long list, which a
+   * ragged left edge defeats. Border plus a faint infill of the same hue reads as a tag without
+   * competing with the clip text for attention.
+   */
+  .badge {
+    flex: 0 0 52px; width: 52px; text-align: center;
+    padding: 3px 0; border-radius: 5px;
+    font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--badge);
+    border: 1px solid color-mix(in srgb, var(--badge) 45%, transparent);
+    background: color-mix(in srgb, var(--badge) 12%, transparent);
+  }
+
+  .badge.swatch {
+    background: var(--swatch);
+    border: 1px solid rgba(255,255,255,.28);
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,.35);
+    padding: 0; height: 20px;
+  }
+
+  /*
+   * Contrast, not opacity. A faint glyph at 45% measured 1.49:1 against the card, well under
+   * the 3:1 WCAG asks of non-text controls — and hover only reached 2.18:1. Setting the colour
+   * directly gives 4.48:1 at rest and full contrast on hover, with no compounding.
+   */
+  /*
+   * The row's 10px gap applies between every child, which spaced the controls as far apart from
+   * each other as from the text. Clustering them keeps the row readable as "content, then
+   * actions" and buys back horizontal space.
+   */
+  .controls { flex: 0 0 auto; display: flex; align-items: center; gap: 1px; margin-left: 2px; }
+
+  .hide, .edit, .del {
+    flex: 0 0 auto; width: 26px; height: 26px; display: grid; place-items: center;
+    border-radius: 6px; color: var(--fg-dim); line-height: 1;
+    transition: background 110ms ease, color 110ms ease;
+  }
+  .hide svg, .edit svg, .del svg { display: block; }
+  .card:hover .hide, .card.active .hide { color: var(--fg); }
+  .hide:hover { background: var(--kbd); color: var(--fg); }
+  /* A masked row keeps its control lit, so the state is legible without hovering. */
+  .hide.on { color: var(--accent); }
+
+  .card:hover .edit, .card.active .edit { color: var(--fg); }
+  .edit:hover { background: var(--kbd); color: var(--fg); }
+
+  .card:hover .del, .card.active .del { color: var(--fg); }
+  .del:hover { background: var(--kbd); color: #ff6b6b; }
+  /* The inline editor replaces the label in place, so the row does not jump while renaming. */
+  /*
+   * The row becomes the editor rather than opening one elsewhere, so the text stays where the
+   * eye already is. Everything else in the row is hidden for the duration — including the
+   * controls, so there is no delete button beside a half-finished edit.
+   */
+  .card.editing { flex-direction: column; align-items: stretch; gap: 8px; cursor: default; }
+  .card.editing > *:not(.editor) { display: none; }
+  .editor { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+  .ed-title, .ed-value {
+    width: 100%; font: inherit; color: var(--fg); background: var(--bg);
+    border: 1px solid var(--card-line); border-radius: 6px; padding: 6px 8px; outline: none;
+  }
+  .ed-title { font-size: 13px; font-weight: 550; }
+  .ed-title:focus, .ed-value:focus { border-color: var(--accent); }
+  /*
+   * Capped and scrollable. Left to grow, a long snippet would turn one row into the whole
+   * window and push the rest of the list out of reach.
+   */
+  /*
+   * pre-wrap, not pre: indentation and blank lines survive, but a long line folds into view
+   * instead of scrolling sideways. A single-line JSON payload otherwise ran off the right edge
+   * with only a horizontal scrollbar to find it by. Breaking anywhere covers the unbroken
+   * cases — tokens, URLs, base64 — which offer no space to wrap at.
+   */
+  .ed-value {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    line-height: 1.45; min-height: 62px; max-height: 168px; resize: vertical;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .ed-actions { display: flex; align-items: center; gap: 8px; }
+  .ed-hint { flex: 1 1 auto; font-size: 11px; color: var(--fg-faint); }
+  .ed-btn {
+    padding: 4px 11px; font: inherit; font-size: 12px; border-radius: 6px; cursor: pointer;
+    background: var(--kbd); border: 1px solid var(--card-line); color: var(--fg);
+  }
+  .ed-btn.primary { background: var(--accent); border-color: var(--accent); color: #14161a; font-weight: 600; }
+  .ed-btn:hover { filter: brightness(1.12); }
+
   .label {
-    flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 550;
+    flex: 0 1 auto; min-width: 0;
+    font-size: 13px; font-weight: 550;
     letter-spacing: -.008em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .label mark { background: transparent; color: var(--mark); font-weight: 700; }
+
+  /*
+   * Clip rows put the name above the value instead of beside it.
+   *
+   * Sharing one line made the two negotiate for width, and flexbox settles that in proportion to
+   * content length — so a long value crushed the name to a few characters, rendering a clip
+   * named "JSON" as "JSO…". Every previous fix here was a referee between them (a percentage cap,
+   * then a shrink factor); stacking retires the problem instead, and lets a long name occupy the
+   * whole row.
+   *
+   * Scoped to clip rows: transform cards are terse enough to read on one line, and an action
+   * row's hint belongs beside its label rather than under it.
+   */
+  /*
+   * The line boxes are pinned rather than left to the font, so the arithmetic below is exact:
+   * 18 + 3 + 16 = 37 for a named clip, and min-height holds an unnamed one to the same 37
+   * whether its value wraps to two lines or fits on one. Left to the font's own metrics, a
+   * short unnamed clip came out 3px shorter than everything else.
+   */
+  html[data-layout="list"] .card:not(.is-action) .text {
+    flex-direction: column; align-items: stretch; justify-content: center;
+    gap: 3px; min-height: 37px;
+  }
+  html[data-layout="list"] .card:not(.is-action) .label { line-height: 18px; max-width: 100%; }
+  html[data-layout="list"] .card:not(.is-action) .preview { width: 100%; line-height: 16px; }
+  /*
+   * An unnamed clip has no name to put on the first line, so its value takes both. That keeps
+   * every row the same height — which a blank first line would not — and gives a long unnamed
+   * clip twice the room rather than a placeholder word repeated down the list.
+   */
+  html[data-layout="list"] .card:not(.is-action) .text:not(.has-detail) .label {
+    white-space: normal; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
 
   footer {
     flex: 0 0 auto; border-top: 1px solid var(--line); background: var(--header);
@@ -406,6 +854,46 @@ function renderHtml(
     display: inline-grid; place-items: center; min-width: 17px; height: 17px; padding: 0 4px;
     background: var(--kbd); border-radius: 4px; font: inherit; font-size: 10px; color: var(--fg-dim);
   }
+
+  /*
+   * Shown only while Cmd is held, and positioned over the row controls rather than beside them.
+   * Laid out in flow it would either add clutter at rest or, swapped in for the controls, change
+   * how much room the value has and shift its ellipsis.
+   */
+  .num {
+    position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+    display: none; place-items: center; min-width: 18px; height: 18px; padding: 0 5px;
+    background: var(--kbd); border-radius: 5px;
+    font-size: 11px; font-weight: 700; color: var(--fg-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  html.cmd .card.numbered .num { display: grid; }
+  /*
+   * visibility, not display: the controls keep their box so nothing moves. Scoped to numbered
+   * rows — past the ninth there is no number to show in their place, so hiding them would cost
+   * those rows their controls for nothing.
+   */
+  html.cmd .card.numbered .controls { visibility: hidden; }
+
+  #notice {
+    position: fixed; left: 50%; bottom: 52px; transform: translateX(-50%) translateY(8px);
+    display: flex; align-items: center; gap: 12px;
+    background: var(--card); border: 2px solid var(--card-line); border-radius: 9px;
+    padding: 8px 10px 8px 14px; font-size: 12px; color: var(--fg);
+    opacity: 0; pointer-events: none; transition: opacity 140ms ease, transform 140ms ease;
+  }
+  /* Clickable only while shown, or the invisible toast would swallow clicks on the rows under it. */
+  #notice.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+  /* Bounded so a long clip name cannot stretch the toast past the window. */
+  #notice-text { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #notice-undo {
+    display: none; align-items: center; gap: 6px; padding: 3px 8px;
+    background: var(--kbd); border: 1px solid var(--card-line); border-radius: 6px;
+    font: inherit; font-size: 12px; color: var(--fg); cursor: pointer;
+  }
+  #notice.undoable #notice-undo { display: inline-flex; }
+  #notice-undo:hover { background: var(--card-line); }
+  #notice-undo kbd { background: transparent; color: var(--fg-faint); min-width: 0; padding: 0; }
 
   #empty { display: none; padding: 52px 16px; text-align: center; }
   #empty.show { display: block; }
@@ -425,14 +913,17 @@ function renderHtml(
         <circle cx="7" cy="7" r="4.75" stroke="currentColor" stroke-width="1.5"/>
         <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
       </svg>
-      <input id="q" type="text" placeholder="Filter transforms…" autocomplete="off"
+      <input id="q" type="text" placeholder="${escapeHtml(options.filterPlaceholder ?? "Filter…")}" autocomplete="off"
              spellcheck="false" autofocus role="combobox" aria-expanded="true" />
       <span id="count"></span>
+      <span id="clear" class="is-empty" role="button" title="Clear filter"
+            aria-label="Clear filter">${CROSS_SVG}</span>
     </div>
   </div>
 </header>
 <main role="listbox">
   <div class="wrap">
+    ${actionSection}
     ${sections}
     <div id="empty">
       <div class="big">No matching transform</div>
@@ -440,10 +931,17 @@ function renderHtml(
     </div>
   </div>
 </main>
+<div id="notice">
+  <span id="notice-text"></span>
+  <button id="notice-undo" type="button">Undo <kbd>⌘Z</kbd></button>
+</div>
 <footer>
   <div class="wrap">
     <span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> navigate</span>
     <span><kbd>↵</kbd> select</span>
+    ${options.onEdit ? "<span><kbd>F2</kbd> edit</span>" : ""}
+    ${options.quickSelect ? "<span><kbd>\u2318</kbd><kbd>1</kbd>–<kbd>9</kbd> apply</span>" : ""}
+
     <span><kbd>esc</kbd> cancel</span>
   </div>
 </footer>
@@ -451,13 +949,21 @@ function renderHtml(
 (function () {
   var TOKEN = ${embedJson(token)};
   var SELECTED = ${embedJson(selectedId ?? null)};
+  var QUICK_SELECT = ${embedJson(!!options.quickSelect)};
   var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
   var sections = Array.prototype.slice.call(document.querySelectorAll('section'));
   var q = document.getElementById('q');
+  var clearBtn = document.getElementById('clear');
   var empty = document.getElementById('empty');
   var count = document.getElementById('count');
   var active = 0;
   var sent = false;
+  /** Whether the toast is currently offering to undo a delete, which is what arms ⌘Z. */
+  var undoPending = false;
+  /** Identifies the newest notice, so an older one's timer cannot dismiss it early. */
+  var noticeSeq = 0;
+  /** A numbered choice waiting for the modifier to come up, so a second press cannot queue. */
+  var awaitingRelease = false;
 
   function esc(s) {
     return s.replace(/[&<>"']/g, function (c) {
@@ -469,10 +975,27 @@ function renderHtml(
     return cards.filter(function (c) { return !c.classList.contains('hidden'); });
   }
 
+  /**
+   * Index of the first row that can actually be chosen.
+   *
+   * Action rows are never hidden by the filter, so they sit at index 0 and would otherwise be
+   * the default target — pressing Enter after narrowing to one clip would "Add from clipboard"
+   * instead of pasting the match. Falls back to 0 when nothing selectable remains, which is the
+   * empty-collection case where the action row is the only sensible target.
+   */
+  function firstSelectable() {
+    var vis = visible();
+    for (var i = 0; i < vis.length; i++) {
+      if (!vis[i].dataset.action) return i;
+    }
+    return 0;
+  }
+
   /** Re-renders the label with the matched substring wrapped in <mark>. */
   function highlight(card, term) {
     var label = card.dataset.label;
     var el = card.querySelector('.label');
+    if (!label || !el) return;
     if (!term) { el.textContent = label; return; }
     var at = label.toLowerCase().indexOf(term);
     if (at === -1) { el.textContent = label; return; }
@@ -480,21 +1003,55 @@ function renderHtml(
       esc(label.slice(at, at + term.length)) + '</mark>' + esc(label.slice(at + term.length));
   }
 
-  function paint() {
+  /**
+   * Repaints the selection.
+   *
+   * fromPointer suppresses the scroll. Bringing the selected row into view is for keyboard
+   * navigation, where arrowing past the fold has to make the list follow. Under the pointer it
+   * is wrong: the row is already under the cursor, nothing was asked to move, and scrolling
+   * shifts whichever row sits beneath a stationary mouse.
+   */
+  function paint(fromPointer) {
     var vis = visible();
     if (active >= vis.length) active = Math.max(0, vis.length - 1);
     cards.forEach(function (c) { c.classList.remove('active'); });
     if (vis[active]) {
       vis[active].classList.add('active');
-      vis[active].scrollIntoView({ block: 'nearest' });
+      // Nearest-block scrolling is already a no-op when the row is fully visible, so this only
+      // ever moves the list for a row that is cut off.
+      if (!fromPointer) vis[active].scrollIntoView({ block: 'nearest' });
     }
     empty.classList.toggle('show', vis.length === 0);
     sections.forEach(function (s) {
       var any = Array.prototype.slice.call(s.querySelectorAll('.card'))
         .some(function (c) { return !c.classList.contains('hidden'); });
       s.classList.toggle('hidden', !any);
+      var tally = s.querySelector('.tally');
+      if (tally) {
+        // The whole group, not the filtered subset — the search bar already reports "3 of 12",
+        // and a heading that changed as you typed would say the same thing twice. Rows on their
+        // way out are excluded so the number drops the instant a delete lands.
+        tally.textContent = '(' + s.querySelectorAll('.card:not(.is-action):not(.leaving)').length + ')';
+      }
     });
-    count.textContent = vis.length === cards.length ? '' : vis.length + ' of ' + cards.length;
+    if (QUICK_SELECT) {
+      // Numbered by visible position, so the shortcuts follow the filter: narrow to three
+      // matches and Cmd+2 takes the second of those, not the second in the collection.
+      var pickable = vis.filter(function (c) { return !c.dataset.action; });
+      cards.forEach(function (c) {
+        var n = c.querySelector('.num');
+        if (!n) return;
+        var at = pickable.indexOf(c);
+        var numbered = at >= 0 && at < 9;
+        n.textContent = numbered ? String(at + 1) : '';
+        c.classList.toggle('numbered', numbered);
+      });
+    }
+    // Action rows are always visible, so counting them would make the total look wrong.
+    var selectable = cards.filter(function (c) { return !c.dataset.action; });
+    var visSelectable = vis.filter(function (c) { return !c.dataset.action; });
+    count.textContent = visSelectable.length === selectable.length
+      ? '' : visSelectable.length + ' of ' + selectable.length;
   }
 
   /**
@@ -525,25 +1082,405 @@ function renderHtml(
     if (sent) return;
     sent = true;
     // keepalive lets the request survive the window closing underneath it
-    fetch('/select?t=' + encodeURIComponent(TOKEN), {
+    fetch('/message?t=' + encodeURIComponent(TOKEN), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: id }),
+      body: JSON.stringify({ type: 'select', id: id }),
       keepalive: true
     }).catch(function () {}).then(function () { window.close(); });
   }
 
-  q.addEventListener('input', function () {
+  /**
+   * Action rows mutate the list rather than choosing from it, so the window stays open.
+   * Reloading re-renders server-side, which avoids maintaining a second copy of the card
+   * markup in JS; the page is local so the reload is imperceptible.
+   */
+  /**
+   * Rebuilds the list after it changed, without navigating.
+   *
+   * Neither location.reload() nor location.replace() reliably re-renders inside the native web
+   * view — the row stayed on screen after a delete even though it was already gone from
+   * settings, and only reappeared corrected when the window was reopened. Fetching the fresh
+   * markup and swapping <main> sidesteps navigation and caching altogether, and keeps the
+   * filter text and scroll position intact as a bonus.
+   */
+  function refresh() {
+    // Remember which row was highlighted; the swap below replaces every node, and resetting to
+    // the top made the highlight jump away from the row you just acted on and then snap back as
+    // soon as the pointer moved.
+    var vis = visible();
+    var keepId = vis[active] ? vis[active].dataset.id : null;
+    var keepAction = vis[active] ? vis[active].dataset.action : null;
+
+    fetch(location.pathname + '?t=' + encodeURIComponent(TOKEN) + '&_=' + Date.now(),
+          { cache: 'no-store' })
+      .then(function (r) { return r.text(); })
+      .then(function (markup) {
+        var doc = new DOMParser().parseFromString(markup, 'text/html');
+        var fresh = doc.querySelector('main .wrap');
+        var current = document.querySelector('main .wrap');
+        if (!fresh || !current) return;
+        current.innerHTML = fresh.innerHTML;
+        // Re-query, because every node in <main> was just replaced.
+        cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
+        sections = Array.prototype.slice.call(document.querySelectorAll('section'));
+        empty = document.getElementById('empty');
+        bindCards();
+        // Re-apply the active filter so a mutation does not silently widen the list.
+        applyFilter();
+        // Restore the previously highlighted row when it still exists, else fall back.
+        active = firstSelectable();
+        if (keepId || keepAction) {
+          var after = visible();
+          for (var i = 0; i < after.length; i++) {
+            if ((keepId && after[i].dataset.id === keepId)
+                || (keepAction && after[i].dataset.action === keepAction)) {
+              active = i;
+              break;
+            }
+          }
+        }
+        paint();
+      })
+      .catch(function (e) { report('refresh failed: ' + e); });
+  }
+
+  function runAction(actionId) {
+    if (sent) return;
+    fetch('/message?t=' + encodeURIComponent(TOKEN), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'action', action: actionId })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res && res.message) { showNotice(res.message); }
+      else { refresh(); }
+    }).catch(function () {});
+  }
+
+  /**
+   * Plays a row out and then removes it.
+   *
+   * Purely cosmetic: the caller has already dropped the card from the card list, so as far as
+   * navigation, filtering and the active index are concerned the row is gone the moment the
+   * delete succeeds. Only its pixels are still on screen.
+   */
+  function collapseAndRemove(card) {
+    function drop() { if (card.parentNode) { card.parentNode.removeChild(card); } }
+    // Nothing decorative for anyone who has asked the system for less motion.
+    if (!card || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { drop(); return; }
+
+    // Stop it glowing on the way out if it happened to be the highlighted row.
+    card.classList.remove('active');
+    card.style.height = card.offsetHeight + 'px';
+    // Forces layout so the measured height is the transition's start value; without this the
+    // browser coalesces both writes and the row disappears instantly.
+    void card.offsetHeight;
+    card.classList.add('leaving');
+    card.style.height = '0px';
+
+    var done = false;
+    function finish() { if (done) return; done = true; drop(); }
+    card.addEventListener('transitionend', function (e) {
+      if (e.propertyName === 'height') finish();
+    });
+    // transitionend does not arrive if the window is occluded while the row plays out, which
+    // would strand a collapsed but still-present node in the list.
+    setTimeout(finish, 400);
+  }
+
+  /** Removes an item, keeping the window open so the list can be worked through. */
+  function runDelete(itemId) {
+    if (sent) return;
+    fetch('/message?t=' + encodeURIComponent(TOKEN), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'delete', id: itemId })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res && res.message) { showNotice(res.message); return; }
+      // Removed in place rather than re-fetching: navigation does not re-render inside the
+      // native web view, and a local node removal cannot fail for environment reasons.
+      var card = null;
+      for (var i = 0; i < cards.length; i++) {
+        if (cards[i].dataset.id === itemId) { card = cards[i]; break; }
+      }
+      // Where the row sat, so the highlight can stay put instead of jumping to the top of the
+      // list — which lands on a row the pointer never touched and reads as a phantom hover.
+      var wasAt = card ? visible().indexOf(card) : -1;
+      // Dropped from the card list first, so the row stops existing for navigation and
+      // filtering at once and only its collapse lags behind.
+      cards = cards.filter(function (c) { return c !== card; });
+      if (card) { collapseAndRemove(card); }
+
+      var after = visible();
+      if (wasAt === -1 || after.length === 0) {
+        active = firstSelectable();
+      } else {
+        // Whatever slid up into the vacated slot, clamped when the last row was removed.
+        active = Math.min(wasAt, after.length - 1);
+        // Never settle on the Add row while a real clip is still available.
+        if (after[active] && after[active].dataset.action) active = firstSelectable();
+      }
+      paint();
+      if (res && res.undo) {
+        undoPending = true;
+        showNotice(res.label ? 'Deleted “' + res.label + '”' : 'Clip deleted', true);
+      }
+    }).catch(function (e) { report('delete failed: ' + e); });
+  }
+
+  /** Sends a page-side failure to the plugin log; these are otherwise completely invisible. */
+  function report(message) {
+    try {
+      fetch('/message?t=' + encodeURIComponent(TOKEN), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'error', message: String(message) }), keepalive: true
+      }).catch(function () {});
+    } catch (e) { /* nothing more we can do from here */ }
+  }
+
+  window.addEventListener('error', function (e) {
+    report('uncaught: ' + (e && e.message) + ' @' + (e && e.lineno));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    report('unhandled rejection: ' + (e && e.reason));
+  });
+
+  /** True while a row is open for editing, so global keys do not fight the editor. */
+  function isEditing() {
+    return !!document.querySelector('.editor');
+  }
+
+  /**
+   * Expands the row into an editor for its name and its text.
+   *
+   * The text is fetched rather than read from the row: what the row shows is a truncated
+   * preview, and for a masked clip it is not the text at all. prompt() would be simpler but
+   * does nothing in the native host unless the web view implements a text-input panel, so the
+   * editor is ordinary DOM.
+   */
+  function beginEdit(card) {
+    if (isEditing() || sent) return;
+    var id = card.dataset.id;
+    fetch('/message?t=' + encodeURIComponent(TOKEN), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'read', id: id })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (!res || typeof res.value !== 'string') {
+        showNotice((res && res.message) || 'Could not open that clip');
+        return;
+      }
+      // The row is looked up again rather than reused from the click. A refresh may have
+      // replaced every node while the text was being fetched — editing a row moments after
+      // saving another one did exactly that — and building the editor into the discarded node
+      // put it nowhere, so the pencil silently did nothing. A row that has since gone is
+      // simply not opened.
+      var live = null;
+      for (var i = 0; i < cards.length; i++) {
+        if (cards[i].dataset.id === id) { live = cards[i]; break; }
+      }
+      if (!live || !document.contains(live)) return;
+      openEditor(live, res.value);
+    }).catch(function (e) { report('read for edit failed: ' + e); });
+  }
+
+  function openEditor(card, value) {
+    if (isEditing()) return;
+
+    var editor = document.createElement('div');
+    editor.className = 'editor';
+
+    var title = document.createElement('input');
+    title.className = 'ed-title';
+    title.type = 'text';
+    title.value = card.dataset.title || '';
+    title.placeholder = 'Name this clip';
+
+    var body = document.createElement('textarea');
+    body.className = 'ed-value';
+    body.value = value;
+    body.spellcheck = false;
+    body.rows = 4;
+
+    var actions = document.createElement('div');
+    actions.className = 'ed-actions';
+    var hint = document.createElement('span');
+    hint.className = 'ed-hint';
+    hint.textContent = '\u2318\u21B5 save \u00B7 esc cancel';
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'ed-btn';
+    cancel.textContent = 'Cancel';
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'ed-btn primary';
+    save.textContent = 'Save';
+    actions.appendChild(hint);
+    actions.appendChild(cancel);
+    actions.appendChild(save);
+
+    editor.appendChild(title);
+    editor.appendChild(body);
+    editor.appendChild(actions);
+    card.classList.add('editing');
+    card.appendChild(editor);
+    // Move the highlight onto the row being edited. Opening via the pencil does not select the
+    // row, which otherwise leaves two rows emphasised at once — the one you are editing and
+    // whichever one the highlight happened to be resting on.
+    var at = visible().indexOf(card);
+    if (at !== -1) { active = at; paint(); }
+    title.focus();
+    title.select();
+
+    var done = false;
+    function close() {
+      if (done) return;
+      done = true;
+      card.classList.remove('editing');
+      editor.remove();
+    }
+    function commit() {
+      if (done) return;
+      fetch('/message?t=' + encodeURIComponent(TOKEN), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'edit', id: card.dataset.id, title: title.value, value: body.value
+        })
+      }).then(function (r) { return r.json(); }).then(function (res) {
+        // Kept open on a refusal, so a rejected edit is not simply thrown away.
+        if (res && res.message) { showNotice(res.message); return; }
+        close();
+        refresh();
+      }).catch(function (e) { report('edit failed: ' + e); });
+    }
+
+    // Deliberately no commit-on-blur: moving between the two fields would fire it. The only
+    // ways out are Save, Cancel, and the keys below.
+    editor.addEventListener('keydown', function (e) {
+      // Every key, not just the ones handled here — Space reaches the row and pastes it, and
+      // the arrows and Delete drive the list underneath.
+      e.stopPropagation();
+      if (e.key === 'Escape') { e.preventDefault(); close(); return; }
+      if (e.key === 'Enter') {
+        // In the text area Enter has to make a newline, so saving moves to the modifier. In the
+        // one-line name field there is no newline to make, so Enter saves as it always did.
+        if (e.metaKey || e.ctrlKey || e.target === title) { e.preventDefault(); commit(); }
+      }
+    });
+    editor.addEventListener('keyup', function (e) { e.stopPropagation(); });
+    editor.addEventListener('keypress', function (e) { e.stopPropagation(); });
+    editor.addEventListener('click', function (e) { e.stopPropagation(); });
+    cancel.addEventListener('click', close);
+    save.addEventListener('click', commit);
+  }
+
+  function runToggleHidden(itemId) {
+    if (sent) return;
+    fetch('/message?t=' + encodeURIComponent(TOKEN), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'hide', id: itemId })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res && res.message) { showNotice(res.message); return; }
+      refresh();
+    }).catch(function (e) { report('hide toggle failed: ' + e); });
+  }
+
+  /**
+   * Bottom-centre toast. When undoable it offers to take the last delete back and stays up
+   * longer, since it has to be read and acted on rather than merely noticed.
+   */
+  function showNotice(text, undoable) {
+    var el = document.getElementById('notice');
+    document.getElementById('notice-text').textContent = text;
+    el.classList.toggle('undoable', !!undoable);
+    el.classList.add('show');
+    noticeSeq++;
+    var mine = noticeSeq;
+    setTimeout(function () {
+      // A newer notice has taken over the element; leave it alone.
+      if (mine !== noticeSeq) return;
+      el.classList.remove('show');
+      // ⌘Z stops working when the offer disappears, so the shortcut never does something
+      // the window is no longer telling you it will do.
+      undoPending = false;
+    }, undoable ? 8000 : 2600);
+  }
+
+  function runUndo() {
+    if (sent || !undoPending) return;
+    undoPending = false;
+    fetch('/message?t=' + encodeURIComponent(TOKEN), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'undo' })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res && res.message) {
+        // Re-armed along with the message, so a restore that failed for a fixable reason —
+        // no room right now — can be retried once the reason is gone.
+        undoPending = true;
+        showNotice(res.message, true);
+        return;
+      }
+      document.getElementById('notice').classList.remove('show');
+      refresh();
+    }).catch(function (e) { report('undo failed: ' + e); });
+  }
+
+  document.getElementById('notice-undo').addEventListener('click', runUndo);
+
+  /**
+   * Applies the current filter text to every row. Shared by typing, the clear button and
+   * refresh(), which each used to carry their own copy of this loop.
+   */
+  function applyFilter() {
     var term = q.value.trim().toLowerCase();
+    // Keyed on the raw value, not the trimmed term: a field holding only spaces still has
+    // something in it to clear.
+    clearBtn.classList.toggle('is-empty', q.value === '');
     cards.forEach(function (c) {
-      c.classList.toggle('hidden', term !== '' && c.dataset.search.indexOf(term) === -1);
+      // Action rows stay visible while filtering — "Add from clipboard" is most useful exactly
+      // when a search found nothing. They also carry no searchable text of their own.
+      if (c.dataset.action) return;
+      var hay = c.dataset.search || '';
+      c.classList.toggle('hidden', term !== '' && hay.indexOf(term) === -1);
       highlight(c, term);
     });
-    active = 0;
+  }
+
+  q.addEventListener('input', function () {
+    applyFilter();
+    active = firstSelectable();
     paint();
   });
 
+  clearBtn.addEventListener('click', function () {
+    q.value = '';
+    applyFilter();
+    active = firstSelectable();
+    paint();
+    // Focus goes back to the field: clearing is nearly always the start of a new search, and
+    // the window has no other sensible place for the caret.
+    q.focus();
+  });
+
   document.addEventListener('keydown', function (e) {
+    // The inline editor owns the keyboard while it is open.
+    if (isEditing()) return;
+    // Numbered shortcuts run over the visible list, so they follow the filter: narrow to three
+    // matches and this takes the second of those. The modifier is essential — a bare digit
+    // belongs to the filter, and choosing a row types it into whatever app is frontmost.
+    if (QUICK_SELECT && (e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) {
+      e.preventDefault();
+      var pickable = visible().filter(function (c) { return !c.dataset.action; });
+      var target = pickable[Number(e.key) - 1];
+      if (target) chooseOnModifierRelease(target);
+      return;
+    }
+    // Only claimed while an undo is actually on offer. The filter field has focus almost all the
+    // time, so taking ⌘Z unconditionally would cost it its native text undo for nothing.
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z') && undoPending) {
+      e.preventDefault();
+      runUndo();
+      return;
+    }
     var vis = visible();
     if (e.key === 'ArrowRight') { e.preventDefault(); active = Math.min(active + 1, vis.length - 1); paint(); }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); active = Math.max(active - 1, 0); paint(); }
@@ -551,21 +1488,117 @@ function renderHtml(
     else if (e.key === 'ArrowUp') { e.preventDefault(); moveVertical(-1); }
     else if (e.key === 'Home') { e.preventDefault(); active = 0; paint(); }
     else if (e.key === 'End') { e.preventDefault(); active = vis.length - 1; paint(); }
-    else if (e.key === 'Enter') { e.preventDefault(); if (vis[active]) send(vis[active].dataset.id); }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      var card = vis[active];
+      if (!card) return;
+      if (card.dataset.action) { runAction(card.dataset.action); return; }
+      send(card.dataset.id);
+    }
+    else if (e.key === 'F2') {
+      var editTarget = vis[active];
+      if (editTarget && !editTarget.dataset.action && editTarget.querySelector('.edit')) {
+        e.preventDefault();
+        beginEdit(editTarget);
+      }
+    }
     else if (e.key === 'Escape') { e.preventDefault(); send(null); }
   });
 
-  cards.forEach(function (card) {
-    card.addEventListener('click', function () { send(card.dataset.id); });
-    card.addEventListener('mousemove', function () {
-      var at = visible().indexOf(card);
-      if (at !== -1 && at !== active) { active = at; paint(); }
+  function bindCards() {
+    cards.forEach(function (card) {
+      if (card.dataset.bound) return;
+      card.dataset.bound = '1';
+      var hide = card.querySelector('.hide');
+      if (hide) {
+        hide.addEventListener('click', function (e) {
+          e.stopPropagation();
+          runToggleHidden(card.dataset.id);
+        });
+      }
+      var edit = card.querySelector('.edit');
+      if (edit) {
+        edit.addEventListener('click', function (e) {
+          e.stopPropagation();   // must not select and paste the row
+          beginEdit(card);
+        });
+      }
+      var del = card.querySelector('.del');
+      if (del) {
+        del.addEventListener('click', function (e) {
+          // Must not fall through to the card's own click, which would select and paste it.
+          e.stopPropagation();
+          runDelete(card.dataset.id);
+        });
+      }
+      card.addEventListener('click', function () {
+        if (card.dataset.action) { runAction(card.dataset.action); return; }
+        send(card.dataset.id);
+      });
+      card.addEventListener('mousemove', function () {
+        var at = visible().indexOf(card);
+        if (at !== -1 && at !== active) { active = at; paint(true); }
+      });
     });
-  });
+  }
+  bindCards();
+
+  /*
+   * Reveals the row numbers while Cmd is down.
+   *
+   * Cleared on blur as well as keyup: holding the modifier and switching away never delivers a
+   * keyup here, which would strand the numbers on screen with nothing to explain them.
+   */
+  if (QUICK_SELECT) {
+    var setCmd = function (on) { document.documentElement.classList.toggle('cmd', on); };
+    document.addEventListener('keydown', function (e) {
+      if ((e.key === 'Meta' || e.key === 'Control') && !isEditing()) setCmd(true);
+    });
+    document.addEventListener('keyup', function (e) {
+      if (e.key === 'Meta' || e.key === 'Control') setCmd(false);
+    });
+    window.addEventListener('blur', function () { setCmd(false); });
+  }
+
+  /**
+   * Chooses a row, but not until the modifier is released.
+   *
+   * Selecting types or pastes into whatever app is frontmost, and that happens within a few tens
+   * of milliseconds of this window closing — while Cmd or Ctrl is realistically still down. A
+   * held modifier turns typed characters into shortcuts, and turns the paste keystroke into a
+   * different one. Waiting here fixes every output path at once, rather than each one guarding
+   * against a keyboard state it cannot see.
+   *
+   * The row is marked chosen straight away, so the delay reads as confirmation rather than lag.
+   */
+  function chooseOnModifierRelease(target) {
+    if (sent || awaitingRelease) return;
+    awaitingRelease = true;
+    var at = visible().indexOf(target);
+    if (at !== -1) { active = at; paint(); }
+
+    var done = false;
+    function go() {
+      if (done) return;
+      done = true;
+      document.removeEventListener('keyup', onRelease);
+      clearTimeout(timer);
+      send(target.dataset.id);
+    }
+    function onRelease(e) {
+      if (e.key === 'Meta' || e.key === 'Control') go();
+    }
+    document.addEventListener('keyup', onRelease);
+    // A release that never arrives — the window losing focus mid-press, say — must not strand
+    // the choice.
+    var timer = setTimeout(go, 1200);
+  }
 
   window.addEventListener('beforeunload', function () { if (!sent) send(null); });
 
-  // Open on the button's current setting so reconfiguring starts from where it is now.
+  // Open on the button's current setting so reconfiguring starts from where it is now,
+  // otherwise on the first selectable row rather than an action button.
+  active = firstSelectable();
   if (SELECTED) {
     for (var i = 0; i < cards.length; i++) {
       if (cards[i].dataset.id === SELECTED) { active = i; break; }
@@ -594,8 +1627,10 @@ export async function showPicker(
     const token = randomBytes(16).toString("hex");
     const title = options.title ?? "Choose transform";
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const html = renderHtml(items, token, { ...options, title }, options.theme ?? "dark");
-    const allowedIcons = new Set(items.map(i => i.icon));
+    let currentItems = items;
+    let html = renderHtml(currentItems, token, { ...options, title }, options.theme ?? "dark");
+    // Recomputed on every action, since a new item may reference an icon the old set lacked.
+    let allowedIcons = new Set(currentItems.map(i => i.icon).filter((p): p is string => !!p));
     const warn = options.onWarn ?? (() => { /* caller opted out of diagnostics */ });
 
     return new Promise<string | null>((resolve, reject) => {
@@ -615,7 +1650,20 @@ export async function showPicker(
             server.close();
             // The app window owns no other tabs, so terminating it is safe.
             child?.kill();
-            resolve(result);
+
+            // Only a real selection is followed by typing, so only that needs the handoff wait.
+            if (result === null || !options.awaitFocusHandoff) {
+                resolve(result);
+                return;
+            }
+            waitForFocusHandoff().then(() => resolve(result), () => resolve(result));
+        }
+
+        /** (Re)starts the idle countdown; every interaction pushes the deadline back. */
+        function armIdleTimer(): void {
+            if (settled) return;
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => finish(null), timeoutMs);
         }
 
         /** A host that never displayed anything — the caller should try the next one. */
@@ -641,7 +1689,14 @@ export async function showPicker(
                 // Proof the host actually launched and rendered something.
                 pageServed = true;
                 if (loadWatchdog) clearTimeout(loadWatchdog);
-                res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(html);
+                // no-store because the page is regenerated on every add and delete. Without it
+                // the reload after a mutation is served from the web view's cache, so the item
+                // stays on screen even though it is already gone from settings.
+                res.writeHead(200, {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Cache-Control": "no-store, no-cache, must-revalidate",
+                    "Pragma": "no-cache",
+                }).end(html);
                 return;
             }
 
@@ -673,20 +1728,209 @@ export async function showPicker(
                 return;
             }
 
-            if (url.pathname === "/select" && req.method === "POST") {
+            if (url.pathname === "/message" && req.method === "POST") {
+                // The user is still here; push the idle deadline back.
+                armIdleTimer();
                 let body = "";
                 req.on("data", chunk => { body += chunk; });
                 req.on("end", () => {
-                    res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
-                    let id: string | null = null;
+                    let parsed: {
+                        type?: unknown; id?: unknown; action?: unknown; message?: unknown;
+                        title?: unknown; value?: unknown;
+                    };
                     try {
-                        const parsed = JSON.parse(body) as { id?: unknown };
-                        if (typeof parsed.id === "string" && items.some(i => i.id === parsed.id)) {
-                            id = parsed.id;
-                        }
+                        parsed = JSON.parse(body);
                     } catch {
-                        // malformed body — treat as a cancel
+                        // malformed body — treat as a cancel rather than guessing intent
+                        res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                        finish(null);
+                        return;
                     }
+
+                    // Page-side failures, so they reach the plugin log instead of vanishing.
+                    if (parsed.type === "error" && typeof parsed.message === "string") {
+                        warn(`picker page error: ${parsed.message}`);
+                        res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                        return;
+                    }
+
+                    // Hiding mutates the list and leaves the window open.
+                    if (parsed.type === "hide" && typeof parsed.id === "string") {
+                        const toggle = options.onToggleHidden;
+                        if (!toggle) {
+                            res.writeHead(200, { "Content-Type": "application/json" })
+                                .end(JSON.stringify({ message: "Not supported" }));
+                            return;
+                        }
+                        toggle(parsed.id)
+                            .then(updated => {
+                                currentItems = updated;
+                                allowedIcons = new Set(
+                                    updated.map(i => i.icon).filter((p): p is string => !!p)
+                                );
+                                html = renderHtml(
+                                    currentItems, token, { ...options, title }, options.theme ?? "dark"
+                                );
+                                res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                            })
+                            .catch((error: unknown) => {
+                                const message = error instanceof Error ? error.message : "Failed";
+                                warn(`picker hide toggle failed: ${message}`);
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ message }));
+                            });
+                        return;
+                    }
+
+                    // Supplies the editor with an item's real text. Read-only, and answered
+                    // only for an item the picker is actually showing.
+                    if (parsed.type === "read" && typeof parsed.id === "string") {
+                        const read = options.onReadValue;
+                        if (!read || !currentItems.some(i => i.id === parsed.id)) {
+                            res.writeHead(200, { "Content-Type": "application/json" })
+                                .end(JSON.stringify({ message: "Not supported" }));
+                            return;
+                        }
+                        read(parsed.id)
+                            .then(value => {
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ value }));
+                            })
+                            .catch((error: unknown) => {
+                                const message = error instanceof Error ? error.message : "Failed";
+                                warn(`picker read failed: ${message}`);
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ message }));
+                            });
+                        return;
+                    }
+
+                    // An edit mutates the list and leaves the window open.
+                    if (parsed.type === "edit" && typeof parsed.id === "string"
+                        && typeof parsed.title === "string" && typeof parsed.value === "string") {
+                        const edit = options.onEdit;
+                        if (!edit) {
+                            res.writeHead(200, { "Content-Type": "application/json" })
+                                .end(JSON.stringify({ message: "Not supported" }));
+                            return;
+                        }
+                        edit(parsed.id, parsed.title, parsed.value)
+                            .then(updated => {
+                                currentItems = updated;
+                                allowedIcons = new Set(
+                                    updated.map(i => i.icon).filter((p): p is string => !!p)
+                                );
+                                html = renderHtml(
+                                    currentItems, token, { ...options, title }, options.theme ?? "dark"
+                                );
+                                res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                            })
+                            .catch((error: unknown) => {
+                                const message = error instanceof Error ? error.message : "Failed";
+                                warn(`picker edit failed: ${message}`);
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ message }));
+                            });
+                        return;
+                    }
+
+                    // Delete mutates the list and leaves the window open, like an action row.
+                    if (parsed.type === "delete" && typeof parsed.id === "string") {
+                        const remove = options.onDelete;
+                        if (!remove) {
+                            res.writeHead(200, { "Content-Type": "application/json" })
+                                .end(JSON.stringify({ message: "Not supported" }));
+                            return;
+                        }
+                        // Captured before the removal, so the notice can name what went. Taken
+                        // from the item rather than the page: this label is already masked for a
+                        // hidden clip, so undoing a secret cannot put its value on screen.
+                        const goneLabel = currentItems.find(i => i.id === parsed.id)?.label;
+                        remove(parsed.id)
+                            .then(updated => {
+                                currentItems = updated;
+                                allowedIcons = new Set(
+                                    updated.map(i => i.icon).filter((p): p is string => !!p)
+                                );
+                                html = renderHtml(
+                                    currentItems, token, { ...options, title }, options.theme ?? "dark"
+                                );
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify(options.onUndoDelete
+                                        ? { undo: true, label: goneLabel }
+                                        : {}));
+                            })
+                            .catch((error: unknown) => {
+                                const message = error instanceof Error ? error.message : "Failed";
+                                warn(`picker delete failed: ${message}`);
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ message }));
+                            });
+                        return;
+                    }
+
+                    // Undo restores the last deletion and leaves the window open.
+                    if (parsed.type === "undo") {
+                        const undo = options.onUndoDelete;
+                        if (!undo) {
+                            res.writeHead(200, { "Content-Type": "application/json" })
+                                .end(JSON.stringify({ message: "Nothing to undo" }));
+                            return;
+                        }
+                        undo()
+                            .then(updated => {
+                                currentItems = updated;
+                                allowedIcons = new Set(
+                                    updated.map(i => i.icon).filter((p): p is string => !!p)
+                                );
+                                html = renderHtml(
+                                    currentItems, token, { ...options, title }, options.theme ?? "dark"
+                                );
+                                res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                            })
+                            .catch((error: unknown) => {
+                                const message = error instanceof Error ? error.message : "Failed";
+                                warn(`picker undo failed: ${message}`);
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ message }));
+                            });
+                        return;
+                    }
+
+                    // An action mutates the list and leaves the window open.
+                    if (parsed.type === "action" && typeof parsed.action === "string") {
+                        const handler = options.onAction;
+                        if (!handler) {
+                            res.writeHead(200, { "Content-Type": "application/json" })
+                                .end(JSON.stringify({ message: "Not supported" }));
+                            return;
+                        }
+                        handler(parsed.action)
+                            .then(updated => {
+                                currentItems = updated;
+                                allowedIcons = new Set(
+                                    updated.map(i => i.icon).filter((p): p is string => !!p)
+                                );
+                                html = renderHtml(
+                                    currentItems, token, { ...options, title }, options.theme ?? "dark"
+                                );
+                                res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                            })
+                            .catch((error: unknown) => {
+                                // Report in the window instead of closing it — losing the picker on
+                                // a failed add would be a worse outcome than an inline message.
+                                const message = error instanceof Error ? error.message : "Failed";
+                                warn(`picker action "${parsed.action as string}" failed: ${message}`);
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ message }));
+                            });
+                        return;
+                    }
+
+                    res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                    const id = typeof parsed.id === "string" && currentItems.some(i => i.id === parsed.id)
+                        ? parsed.id
+                        : null;
                     finish(id);
                 });
                 return;
@@ -702,7 +1946,7 @@ export async function showPicker(
             const target = `http://127.0.0.1:${port}/?t=${token}`;
             child = spawn(browserPath, [
                 `--app=${target}`,
-                `--window-size=${WINDOW_WIDTH},${WINDOW_HEIGHT}`,
+                `--window-size=${options.width ?? WINDOW_WIDTH},${options.height ?? WINDOW_HEIGHT}`,
                 "--no-first-run",
                 "--no-default-browser-check",
             ], { stdio: ["ignore", "ignore", "pipe"], detached: false });
@@ -734,7 +1978,7 @@ export async function showPicker(
                 }
             });
 
-            timer = setTimeout(() => finish(null), timeoutMs);
+            armIdleTimer();
             loadWatchdog = setTimeout(() => {
                 if (!pageServed) {
                     failLaunch(`never requested the page within ${PAGE_LOAD_TIMEOUT_MS}ms`);
