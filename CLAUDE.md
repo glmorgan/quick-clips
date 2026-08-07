@@ -172,6 +172,13 @@ row silently turning to dots is confusing: the notice explains why a captured cl
 
 **⌘1–9 quick select** (`quickSelect`) numbers the **visible** rows, so the shortcuts follow the filter. The modifier is not optional — stored text is full of digits, and a bare number would paste a row instead of filtering for it. Numbers appear only while ⌘ is held, positioned over the controls (which are hidden with `visibility`, so nothing reflows). **The choice is held until the modifier is released**, because selecting types into whatever app is frontmost within tens of milliseconds, and a held modifier turns typed characters into shortcuts.
 
+**Reordering** (`onReorder`) binds Alt+Up and Alt+Down to `moveClip`. Refused while the filter has
+text, with a notice saying so: the rows on screen are not adjacent in the collection then, so a
+move would swap the clip past neighbours the user cannot see. Movement is clamped rather than
+wrapped, and `refresh()` restores the selection by id, so the highlight rides along with the clip
+and the key can be held to move it several places. Capture still prepends, so a new clip lands at
+the top of a curated list by design.
+
 **The filter's clear button** is toggled by a class from `applyFilter()`, *not* by `#q:placeholder-shown ~ #clear`. Chrome does not invalidate that sibling selector when the value changes programmatically — measured: the selector matched nothing while the computed style stayed `hidden`, even after a forced reflow. It is hidden with `visibility` so its box stays reserved and the search bar does not change height.
 
 **Browser fallback specifics:** the executable is spawned **directly**, not via `open -a` — `open` drops `--args` when the browser is already running, yielding an ordinary tab instead of an app window. `--window-size`/`--window-position` are likewise ignored when it is already running, so the page calls `resizeTo`/`moveTo` itself; `screen.availLeft`/`availTop` centre it on the display it opened on.

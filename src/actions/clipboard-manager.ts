@@ -5,7 +5,8 @@ import {
 import { randomUUID } from "node:crypto";
 import {
     addClip, applySecretVerdict, classifySecret, clipRowText, clipSearchText, detectClipKind,
-    markClipUsed, normaliseClips, removeClip, restoreClip, toggleClipHidden, updateClip,
+    markClipUsed, moveClip, normaliseClips, removeClip, restoreClip, toggleClipHidden,
+    updateClip,
     type ClipEntry, type ClipKind,
 } from "../utils.js";
 import { findHosts, showPicker, type PickerItem } from "../picker.js";
@@ -419,6 +420,12 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
                         hint: "Store whatever is currently copied",
                     }],
                     onAction,
+                    onReorder: async (clipId: string, delta: number) => {
+                        // Order is the user's own here, so this is the only thing besides
+                        // capturing and deleting that changes it.
+                        await persist(moveClip(getClips(), clipId, delta));
+                        return this.toPickerItems(getClips());
+                    },
                     onToggleHidden: async (clipId: string) => {
                         await persist(toggleClipHidden(getClips(), clipId));
                         return this.toPickerItems(getClips());

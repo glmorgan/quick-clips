@@ -92,6 +92,7 @@ It suits the long tail of per-project details — connection strings, client IDs
 - **Filter by anything** — name, contents, or type. Typing "json" finds your JSON clips; "colour" or "hex" finds swatches
 - **Undo a delete** — deleting is one click, so a toast offers to put it back for 8 seconds, via the button or ⌘Z. It returns to the position it came from
 - **Stable order** — using a clip never moves it, so a clip's position and its ⌘-number stay put
+- **Reorder by hand** — ⌥↑ and ⌥↓ move the selected clip. Not available while a filter is applied, since the rows on screen are not adjacent in the collection
 - **50 clips per collection**, 10,000 characters each
 
 ### Masking credentials
@@ -125,6 +126,7 @@ Clips stored before this existed are not re-examined — re-capture one to have 
 | ↑ ↓ ← → | Move between clips |
 | Return | Paste the selected clip |
 | ⌘1 – ⌘9 | Paste one of the first nine visible clips — hold ⌘ to see the numbers |
+| ⌥↑ ⌥↓ | Move the selected clip up or down |
 | F2 | Edit the selected clip's name and text |
 | ⌘Z | Undo the last delete |
 | Escape | Close without pasting |

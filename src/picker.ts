@@ -124,6 +124,11 @@ export type PickerOptions = {
      */
     onReadValue?: (itemId: string) => Promise<string>;
     /**
+     * Moves an item by `delta` places. Supplying this binds Alt+Up and Alt+Down and adds the
+     * footer hint. Returns the updated list to re-render.
+     */
+    onReorder?: (itemId: string, delta: number) => Promise<PickerItem[]>;
+    /**
      * Toggles whether an item's value is masked on screen. Supplying this puts a hide control on
      * every row. Masking is the caller's job — the picker only renders what it is given and
      * reports the toggle.
@@ -953,7 +958,8 @@ function renderHtml(
     <span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> navigate</span>
     <span><kbd>↵</kbd> select</span>
     ${options.onEdit ? "<span><kbd>F2</kbd> edit</span>" : ""}
-    ${options.quickSelect ? "<span><kbd>\u2318</kbd><kbd>1</kbd>–<kbd>9</kbd> apply</span>" : ""}
+    ${options.quickSelect ? "<span><kbd>\u2318</kbd><kbd>1</kbd>-<kbd>9</kbd> apply</span>" : ""}
+    ${options.onReorder ? "<span><kbd>\u2325</kbd><kbd>\u2191</kbd><kbd>\u2193</kbd> move</span>" : ""}
 
     <span><kbd>esc</kbd> cancel</span>
   </div>
@@ -963,6 +969,7 @@ function renderHtml(
   var TOKEN = ${embedJson(token)};
   var SELECTED = ${embedJson(selectedId ?? null)};
   var QUICK_SELECT = ${embedJson(!!options.quickSelect)};
+  var CAN_REORDER = ${embedJson(!!options.onReorder)};
   var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
   var sections = Array.prototype.slice.call(document.querySelectorAll('section'));
   var q = document.getElementById('q');
@@ -1389,6 +1396,32 @@ function renderHtml(
     save.addEventListener('click', commit);
   }
 
+  /**
+   * Moves the selected clip within the collection.
+   *
+   * Refused while the filter has text. The rows on screen are not adjacent in the collection
+   * then, so "move down" would swap the clip past neighbours the user cannot see.
+   */
+  function runReorder(delta) {
+    if (sent) return;
+    if (q.value.trim() !== '') {
+      showNotice('Clear the filter to reorder');
+      return;
+    }
+    var card = visible()[active];
+    if (!card || card.dataset.action) return;
+
+    fetch('/message?t=' + encodeURIComponent(TOKEN), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'reorder', id: card.dataset.id, delta: delta })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res && res.message) { showNotice(res.message); return; }
+      // refresh() restores the selection by id, so the highlight rides along with the clip and
+      // the key can be held down to move it several places.
+      refresh();
+    }).catch(function (e) { report('reorder failed: ' + e); });
+  }
+
   function runToggleHidden(itemId) {
     if (sent) return;
     fetch('/message?t=' + encodeURIComponent(TOKEN), {
@@ -1495,6 +1528,11 @@ function renderHtml(
     if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z') && undoPending) {
       e.preventDefault();
       runUndo();
+      return;
+    }
+    if (CAN_REORDER && e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault();
+      runReorder(e.key === 'ArrowUp' ? -1 : 1);
       return;
     }
     var vis = visible();
@@ -1752,7 +1790,7 @@ export async function showPicker(
                 req.on("end", () => {
                     let parsed: {
                         type?: unknown; id?: unknown; action?: unknown; message?: unknown;
-                        title?: unknown; value?: unknown;
+                        title?: unknown; value?: unknown; delta?: unknown;
                     };
                     try {
                         parsed = JSON.parse(body);
@@ -1879,6 +1917,35 @@ export async function showPicker(
                             .catch((error: unknown) => {
                                 const message = error instanceof Error ? error.message : "Failed";
                                 warn(`picker delete failed: ${message}`);
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify({ message }));
+                            });
+                        return;
+                    }
+
+                    // Reordering mutates the list and leaves the window open.
+                    if (parsed.type === "reorder" && typeof parsed.id === "string"
+                        && typeof parsed.delta === "number") {
+                        const reorder = options.onReorder;
+                        if (!reorder) {
+                            res.writeHead(200, { "Content-Type": "application/json" })
+                                .end(JSON.stringify({ message: "Not supported" }));
+                            return;
+                        }
+                        reorder(parsed.id, parsed.delta)
+                            .then(updated => {
+                                currentItems = updated;
+                                allowedIcons = new Set(
+                                    updated.map(i => i.icon).filter((p): p is string => !!p)
+                                );
+                                html = renderHtml(
+                                    currentItems, token, { ...options, title }, options.theme ?? "dark"
+                                );
+                                res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                            })
+                            .catch((error: unknown) => {
+                                const message = error instanceof Error ? error.message : "Failed";
+                                warn(`picker reorder failed: ${message}`);
                                 res.writeHead(200, { "Content-Type": "application/json" })
                                     .end(JSON.stringify({ message }));
                             });

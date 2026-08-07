@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
     addClip, applyTransform, escapeForAppleScript, generateLabel, isGenerator,
-    markClipUsed, normaliseClips, removeClip, restoreClip, updateClip, classifySecret,
+    markClipUsed, moveClip, normaliseClips, removeClip, restoreClip, updateClip, classifySecret,
     applySecretVerdict,
     clipDisplayName,
     clipRowText, clipSearchText,
@@ -678,6 +678,39 @@ describe("clip collections", () => {
             markClipUsed(clips, "1", 5);
             expect(clips[0].lastUsedAt).toBeUndefined();
         });
+    });
+
+    describe("moveClip", () => {
+        const three = () => [mk("a", "1"), mk("b", "2"), mk("c", "3")];
+        const ids = (cs: ClipEntry[]) => cs.map(c => c.id).join(",");
+
+        it("moves a clip down one place", () =>
+            expect(ids(moveClip(three(), "1", 1))).toBe("2,1,3"));
+        it("moves a clip up one place", () =>
+            expect(ids(moveClip(three(), "3", -1))).toBe("1,3,2"));
+        it("moves several places at once", () =>
+            expect(ids(moveClip(three(), "1", 2))).toBe("2,3,1"));
+
+        // Clamped, not wrapped: holding the key at the end should stop, not jump to the far end
+        it("stops at the top", () => expect(ids(moveClip(three(), "1", -1))).toBe("1,2,3"));
+        it("stops at the bottom", () => expect(ids(moveClip(three(), "3", 1))).toBe("1,2,3"));
+        it("clamps an overshoot rather than wrapping", () =>
+            expect(ids(moveClip(three(), "2", 99))).toBe("1,3,2"));
+
+        it("ignores an unknown id", () =>
+            expect(ids(moveClip(three(), "nope", 1))).toBe("1,2,3"));
+        it("does not mutate the input", () => {
+            const clips = three();
+            moveClip(clips, "1", 1);
+            expect(ids(clips)).toBe("1,2,3");
+        });
+        it("carries the clip intact, masking and all", () => {
+            const secret: ClipEntry = { ...mk("v", "1"), hidden: true, title: "Key", lastUsedAt: 7 };
+            const after = moveClip([secret, mk("b", "2")], "1", 1);
+            expect(after[1]).toEqual(secret);
+        });
+        it("is a no-op for a single clip", () =>
+            expect(ids(moveClip([mk("a", "1")], "1", 1))).toBe("1"));
     });
 
     describe("markClipUsed and re-capture", () => {

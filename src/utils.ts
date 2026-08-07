@@ -489,6 +489,25 @@ function lastTouched(clip: ClipEntry): number {
 }
 
 /**
+ * Moves a clip up or down by `delta` places.
+ *
+ * Clamped rather than wrapped: holding the key at the top of the list should stop, not send the
+ * clip to the bottom. Order is the collection's own, so this is the only thing that changes it
+ * besides capturing and deleting.
+ */
+export function moveClip(clips: readonly ClipEntry[], id: string, delta: number): ClipEntry[] {
+    const from = clips.findIndex(c => c.id === id);
+    if (from === -1) return [...clips];
+    const to = Math.max(0, Math.min(clips.length - 1, from + delta));
+    if (to === from) return [...clips];
+
+    const next = [...clips];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    return next;
+}
+
+/**
  * Records that a clip was pasted, leaving the collection's order alone.
  *
  * Using a clip deliberately does not move it. The list is a curated set of references rather
