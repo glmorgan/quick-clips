@@ -85,8 +85,13 @@ export type PickerOptions = {
     /**
      * Handles an action row. Returns the updated item list, which the picker re-renders.
      * Keeping this a callback leaves clipboard and settings logic in the action, not here.
+     *
+     * Return `{ items, notice }` to re-render *and* say something — distinct from throwing,
+     * which reports a failure and leaves the list alone. Used to explain a clip that arrived
+     * masked, since a row silently turning to dots is confusing.
      */
-    onAction?: (actionId: string) => Promise<PickerItem[]>;
+    onAction?: (actionId: string) =>
+        Promise<PickerItem[] | { items: PickerItem[]; notice?: string }>;
     /**
      * Deletes an item. Supplying this puts a delete control on every row and binds the Delete
      * key; omit it and the picker stays read-only. Returns the updated list to re-render.
@@ -884,8 +889,16 @@ function renderHtml(
   }
   /* Clickable only while shown, or the invisible toast would swallow clicks on the rows under it. */
   #notice.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
-  /* Bounded so a long clip name cannot stretch the toast past the window. */
-  #notice-text { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /*
+   * Wraps rather than ellipsising on one line. A one-line cap was fine while every message was
+   * "Deleted X", but an explanatory one lost its ending — "Check it i..." — which is the half
+   * that tells you what to do. Still clamped, so a long clip name cannot grow the toast without
+   * limit.
+   */
+  #notice-text {
+    max-width: 460px; overflow: hidden; white-space: normal; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  }
   #notice-undo {
     display: none; align-items: center; gap: 6px; padding: 3px 8px;
     background: var(--kbd); border: 1px solid var(--card-line); border-radius: 6px;
@@ -1152,8 +1165,11 @@ function renderHtml(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'action', action: actionId })
     }).then(function (r) { return r.json(); }).then(function (res) {
-      if (res && res.message) { showNotice(res.message); }
-      else { refresh(); }
+      // message means the action failed and the list is unchanged; notice means it succeeded
+      // and has something to say about the result.
+      if (res && res.message) { showNotice(res.message); return; }
+      refresh();
+      if (res && res.notice) { showNotice(res.notice); }
     }).catch(function () {});
   }
 
@@ -1906,7 +1922,9 @@ export async function showPicker(
                             return;
                         }
                         handler(parsed.action)
-                            .then(updated => {
+                            .then(result => {
+                                const updated = Array.isArray(result) ? result : result.items;
+                                const notice = Array.isArray(result) ? undefined : result.notice;
                                 currentItems = updated;
                                 allowedIcons = new Set(
                                     updated.map(i => i.icon).filter((p): p is string => !!p)
@@ -1914,7 +1932,8 @@ export async function showPicker(
                                 html = renderHtml(
                                     currentItems, token, { ...options, title }, options.theme ?? "dark"
                                 );
-                                res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+                                res.writeHead(200, { "Content-Type": "application/json" })
+                                    .end(JSON.stringify(notice ? { notice } : {}));
                             })
                             .catch((error: unknown) => {
                                 // Report in the window instead of closing it — losing the picker on

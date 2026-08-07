@@ -104,8 +104,6 @@ export function escapeForAppleScript(text: string): string {
 export type ClipEntry = {
     /** Stable id, so reordering never invalidates a pending selection. */
     id: string;
-    /** Auto-generated one-line summary, kept as the fallback when no title is set. */
-    label: string;
     /**
      * Masks the value in the picker. **Hiding, not securing** — the value remains in plain text
      * in the Stream Deck profile, and pasting still yields it verbatim. This defends against
@@ -157,6 +155,194 @@ export function summarizeClip(value: string, maxChars: number = SUMMARY_MAX_CHAR
     const flat = value.replace(/\s+/g, " ").trim();
     if (flat === "") return "(blank)";
     return flat.length > maxChars ? `${flat.slice(0, maxChars)}…` : flat;
+}
+
+/**
+ * How confident the secret check is, kept in the type so the two can never be conflated.
+ *
+ * `identified` means a rule recognised the value's format — a published token prefix, a JWT that
+ * decodes, a URL carrying a password. `heuristic` means nothing recognised it and only its shape
+ * suggested it. They have earned very different amounts of trust, and presenting them
+ * identically would invite the user to trust both equally.
+ */
+export type SecretConfidence = "identified" | "heuristic" | "none";
+
+export type SecretVerdict = {
+    secret: boolean;
+    confidence: SecretConfidence;
+    /** What matched, phrased for a person. */
+    reason: string;
+    /**
+     * A short name for the clip, used when auto-masking one that has none.
+     *
+     * Masking costs a clip its searchability — {@link clipSearchText} returns the title alone for
+     * a hidden clip, deliberately, so typing a secret cannot highlight its row. An unnamed masked
+     * clip is therefore findable by nothing, and renders as the same twelve dots as every other
+     * one. A generated name restores both, and is plainly a default the user can replace.
+     */
+    title?: string;
+};
+
+/**
+ * Token prefixes their vendors publish so that scanners can match them, which is exactly why
+ * they do not misfire. Order is irrelevant; none of these overlap.
+ */
+const SECRET_PATTERNS: [RegExp, string, string][] = [
+    [/\b(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})/, "GitHub token", "looks like a GitHub token"],
+    [/\bglpat-[A-Za-z0-9_-]{20,}/, "GitLab token", "looks like a GitLab token"],
+    [/\b[sr]k_(live|test)_[A-Za-z0-9]{16,}/, "Stripe secret key", "looks like a Stripe secret key"],
+    [/\bxox[bpasr]-[A-Za-z0-9-]{10,}/, "Slack token", "looks like a Slack token"],
+    [/\b(AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|ABIA)[A-Z0-9]{16}\b/, "AWS access key", "looks like an AWS access key id"],
+    [/\bAIza[0-9A-Za-z_-]{35}\b/, "Google API key", "looks like a Google API key"],
+    [/\bsk-ant-[A-Za-z0-9_-]{20,}/, "Anthropic API key", "looks like an Anthropic API key"],
+    [/\bnpm_[A-Za-z0-9]{36}\b/, "npm token", "looks like an npm token"],
+    [/\bSG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{30,}/, "SendGrid key", "looks like a SendGrid key"],
+    [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "Private key", "looks like a private key"],
+    // Context, not shape. A token copied out of devtools or a curl command arrives wrapped in
+    // its header, and the space in it defeats the shape heuristic — so without these, adding
+    // the context that proves it is a credential made it *less* likely to be masked.
+    [/\bproxy-authorization\s*:\s*\S/i, "Authorization header", "is a Proxy-Authorization header"],
+    [/\bauthorization\s*:\s*\S/i, "Authorization header", "is an Authorization header"],
+    [/\bbearer\s+[A-Za-z0-9\-._~+/]{12,}=*/i, "Bearer token", "carries a bearer token"],
+];
+
+/**
+ * A value assigned to a name that means "credential".
+ *
+ * The name is the signal, so the generated title can safely reuse it — a field called
+ * `x-api-key` gives away nothing the mask was hiding. The value must be at least 12 characters
+ * with no whitespace, which is what keeps prose out: "password: 8 characters minimum" does not
+ * match, while `"api_key": "abcdefghijklmnop"` does.
+ *
+ * Underscores and hyphens count as separators before the name, so DATABASE_PASSWORD= is
+ * identified rather than falling through to the shape heuristic and being called an opaque
+ * token — the same outcome, but with a name that says what it is.
+ */
+const CREDENTIAL_ASSIGNMENT =
+    /(?:^|[\s{,"'(<_-])(x-api-key|api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret|auth[_-]?token|private[_-]?token|access[_-]?token|password|passwd|secret|token)["']?\s*[:=]\s*["']?([A-Za-z0-9\-._~+/]{12,})/i;
+
+/** `user:password`, which is what a Basic credential decodes to. */
+const USERINFO = /^[^\s:]{1,64}:[^\s]{1,256}$/;
+
+/** Shannon entropy per character. Hex cannot exceed 4 bits, which is what excludes hashes. */
+function shannonEntropy(text: string): number {
+    const freq = new Map<string, number>();
+    for (const c of text) freq.set(c, (freq.get(c) ?? 0) + 1);
+    let bits = 0;
+    for (const n of freq.values()) {
+        const pr = n / text.length;
+        bits -= pr * Math.log2(pr);
+    }
+    return bits;
+}
+
+/**
+ * Decoded text, when the value is base64 of something readable — encoded data rather than an
+ * opaque secret. Returns null otherwise, so callers can inspect what it decoded to.
+ *
+ * Without this, base64 of ordinary configuration scores ~4.8 bits/char and trips the shape
+ * heuristic. A base64-encoded *key* decodes to random bytes and still gets flagged.
+ */
+function decodeBase64Text(text: string): string | null {
+    if (!/^[A-Za-z0-9+/]{16,}={0,2}$/.test(text)) return null;
+    try {
+        const decoded = Buffer.from(text, "base64").toString("utf8");
+        if (decoded.length < 8) return null;
+        const printable = [...decoded].filter(c => c >= " " && c <= "~").length;
+        return printable / decoded.length > 0.9 ? decoded : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Decides whether a value looks like a credential, so it can be masked on capture.
+ *
+ * **This recognises a few well-known shapes. It does not detect secrets.** A short password, an
+ * internal token with no distinguishing format, anything under 32 characters — all pass straight
+ * through. Treat a negative as "nothing matched", never as "this is safe".
+ *
+ * Ordered deliberately, and the order is doing real work:
+ *
+ *  1. explicit allows first, so a Stripe *publishable* key is never masked for looking random —
+ *     it is meant to be public, and masking it would be actively wrong
+ *  2. then rules that identify what the value *is*
+ *  3. then a second allow for base64 of readable text
+ *  4. only then the shape heuristic, which is a guess and is labelled as one
+ *
+ * Measured against a corpus of look-alikes: UUIDs, git SHAs and every hex hash sit below the
+ * entropy threshold on their own, because hex caps at 4 bits per character.
+ */
+export function classifySecret(value: string): SecretVerdict {
+    const text = value.trim();
+    if (text === "") return { secret: false, confidence: "none", reason: "empty" };
+
+    if (/\bpk_(live|test)_/.test(text)) {
+        return { secret: false, confidence: "none", reason: "a publishable key, which is meant to be public" };
+    }
+    for (const [pattern, title, reason] of SECRET_PATTERNS) {
+        if (pattern.test(text)) return { secret: true, confidence: "identified", reason, title };
+    }
+    if (isJwt(text)) {
+        return { secret: true, confidence: "identified", reason: "looks like a JWT", title: "JWT" };
+    }
+    try {
+        if (new URL(text).password !== "") {
+            return {
+                secret: true, confidence: "identified",
+                reason: "carries a password in the URL", title: "URL with password",
+            };
+        }
+    } catch {
+        // not a URL — carry on
+    }
+    const decoded = decodeBase64Text(text);
+    if (decoded !== null) {
+        // Checked before the allow below, which would otherwise clear it: a Basic credential is
+        // base64 of perfectly readable text, and that text is a username and password.
+        if (USERINFO.test(decoded)) {
+            return {
+                secret: true, confidence: "identified",
+                reason: "decodes to a username and password", title: "Basic credential",
+            };
+        }
+        return { secret: false, confidence: "none", reason: "base64 of readable text" };
+    }
+    const assigned = text.match(CREDENTIAL_ASSIGNMENT);
+    if (assigned) {
+        return {
+            secret: true, confidence: "identified",
+            reason: `assigns a value to "${assigned[1]}"`, title: assigned[1],
+        };
+    }
+    if (text.length >= 32 && text.length <= 400 && !/\s/.test(text) && shannonEntropy(text) >= 4.5) {
+        return {
+            secret: true, confidence: "heuristic",
+            reason: "is a long opaque string that looks random", title: "Opaque token",
+        };
+    }
+    return { secret: false, confidence: "none", reason: "nothing matched" };
+}
+
+/**
+ * Masks a freshly captured clip and names it, when the check says it is a credential.
+ *
+ * The name is only generated when the user has not supplied one, and is deliberately generic —
+ * "GitHub token" rather than anything drawn from the value — so a glance at the screen learns
+ * nothing the mask was meant to withhold.
+ */
+export function applySecretVerdict(
+    clips: readonly ClipEntry[],
+    id: string,
+    verdict: SecretVerdict
+): ClipEntry[] {
+    if (!verdict.secret) return [...clips];
+    return clips.map(c => {
+        if (c.id !== id) return c;
+        const existing = c.title?.trim();
+        const title = existing ? existing : verdict.title;
+        return { ...c, hidden: true, ...(title ? { title } : {}) };
+    });
 }
 
 /** Broad shape of a clip, used to badge rows in the picker. */
@@ -280,8 +466,8 @@ export function addClip(
     const existing = clips.find(c => c.value === value);
     const rest = clips.filter(c => c.value !== value);
     const entry: ClipEntry = existing
-        ? { ...existing, label: summarizeClip(value) }
-        : { id, label: summarizeClip(value), value, addedAt: now };
+        ? { ...existing }
+        : { id, value, addedAt: now };
 
     const combined = [entry, ...rest];
     if (combined.length <= MAX_CLIPS) return { clips: combined, added: true };
@@ -320,10 +506,9 @@ export function markClipUsed(
 /**
  * Applies an edit to a clip's title and text at once.
  *
- * The stored label is regenerated from the new text, because it is a cached summary rather than
- * something the user maintains; leaving it would show the old contents in the list. Position,
- * id, capture time and masking all survive — editing a clip is a correction, and nothing about
- * it should move the clip.
+ * Position, id, capture time and masking all survive — editing a clip is a correction, and
+ * nothing about it should move the clip. What the row shows follows from the new text, since
+ * every display path derives from the value rather than from anything stored alongside it.
  *
  * Refuses instead of silently breaking an invariant: `duplicate` when another clip already holds
  * that exact text, which {@link addClip} otherwise guarantees cannot happen, and the same empty
@@ -353,11 +538,35 @@ export function updateClip(
         clips: clips.map(c => {
             if (c.id !== id) return c;
             const { title: _dropped, ...rest } = c;
-            const edited: ClipEntry = { ...rest, label: summarizeClip(next.value), value: next.value };
+            const edited: ClipEntry = { ...rest, value: next.value };
             return title === "" ? edited : { ...edited, title };
         }),
         updated: true,
     };
+}
+
+/**
+ * Drops fields that are no longer part of the model, so a stored collection catches up.
+ *
+ * `label` held a summary of the value that nothing ever read — every display path derives from
+ * the value at render time, deliberately, so a row uses the window's real width rather than a
+ * cap fixed when the clip was captured. Keeping it cost roughly a third of the stored size and,
+ * for a masked clip, wrote the secret into the profile twice.
+ *
+ * Named fields only, never "drop what I do not recognise": a collection written by a newer
+ * version must survive an older one reading it.
+ */
+export function normaliseClips(
+    clips: readonly ClipEntry[]
+): { clips: ClipEntry[]; changed: boolean } {
+    let changed = false;
+    const next = clips.map(clip => {
+        if (!("label" in clip)) return clip;
+        changed = true;
+        const { label: _dropped, ...rest } = clip as ClipEntry & { label?: string };
+        return rest;
+    });
+    return { clips: next, changed };
 }
 
 /** The name to show for a clip: the user's title when set, otherwise a summary of the value. */

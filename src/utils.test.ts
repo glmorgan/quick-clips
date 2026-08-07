@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
     addClip, applyTransform, escapeForAppleScript, generateLabel, isGenerator,
-    markClipUsed, removeClip, restoreClip, updateClip, clipDisplayName, clipRowText, clipSearchText,
+    markClipUsed, normaliseClips, removeClip, restoreClip, updateClip, classifySecret,
+    applySecretVerdict,
+    clipDisplayName,
+    clipRowText, clipSearchText,
     toggleClipHidden, splitUrl,
     summarizeClip, detectClipKind,
     MAX_CLIPS, MAX_CLIP_CHARS, type ClipEntry,
@@ -317,7 +320,7 @@ describe("detectClipKind", () => {
 
 describe("clip collections", () => {
     const mk = (value: string, id: string, at = 0): ClipEntry =>
-        ({ id, label: summarizeClip(value), value, addedAt: at });
+        ({ id, value, addedAt: at });
 
     describe("summarizeClip", () => {
         it("collapses whitespace onto one line", () =>
@@ -446,10 +449,11 @@ describe("clip collections", () => {
             const r = updateClip([mk("before", "1")], "1", { title: "", value: "after" });
             expect(r.clips[0].value).toBe("after");
         });
-        it("regenerates the cached label so the list stops showing the old text", () => {
+        it("makes the row show the new text, with no trace of the old", () => {
             const r = updateClip([mk("before", "1")], "1", { title: "", value: "after" });
-            expect(r.clips[0].label).toBe(summarizeClip("after"));
-            expect(r.clips[0].label).not.toContain("before");
+            const row = clipRowText(r.clips[0]);
+            expect(row.label).toBe("after");
+            expect(JSON.stringify(r.clips[0])).not.toContain("before");
         });
         it("keeps id, capture time and masking across an edit", () => {
             const secret: ClipEntry = { ...mk("old", "s1"), hidden: true, addedAt: 42 };
@@ -548,7 +552,7 @@ describe("clip collections", () => {
     });
 
     describe("hiding", () => {
-        const secret = () => ({ ...mk("sk_live_abcdef123456", "1"), title: "Stripe Key" });
+        const secret = () => ({ ...mk("sk_live_" + "EXAMPLE".repeat(3), "1"), title: "Stripe Key" });
 
         it("toggles on and off", () => {
             const on = toggleClipHidden([secret()], "1");
@@ -562,7 +566,7 @@ describe("clip collections", () => {
         });
         it("never alters the value — masking is display only", () => {
             const on = toggleClipHidden([secret()], "1");
-            expect(on[0].value).toBe("sk_live_abcdef123456");
+            expect(on[0].value).toBe("sk_live_" + "EXAMPLE".repeat(3));
         });
 
         it("masks the value in the row, keeping the name", () => {
@@ -572,7 +576,7 @@ describe("clip collections", () => {
             expect(row.detail).toMatch(/^•+$/);
         });
         it("masks the label too when the clip has no name", () => {
-            const row = clipRowText({ ...mk("sk_live_abcdef123456", "1"), hidden: true });
+            const row = clipRowText({ ...mk("sk_live_" + "EXAMPLE".repeat(3), "1"), hidden: true });
             expect(row.label).not.toContain("sk_live");
             expect(row.label).toMatch(/^•+$/);
         });
@@ -588,7 +592,7 @@ describe("clip collections", () => {
             expect(text).not.toContain("sk_live");
         });
         it("includes the value when not hidden", () =>
-            expect(clipSearchText(secret())).toContain("sk_live_abcdef123456"));
+            expect(clipSearchText(secret())).toContain("sk_live_" + "EXAMPLE".repeat(3)));
     });
 
     describe("removeClip", () => {
@@ -781,5 +785,249 @@ describe("paste mode", () => {
             expect(resolvePasteMode("typing", "a\nb")).toBe("typing"));
         it("honours an explicit clipboard choice for one-line text", () =>
             expect(resolvePasteMode("clipboard", "hello")).toBe("clipboard"));
+    });
+});
+
+describe("classifySecret", () => {
+    const verdict = (v: string) => classifySecret(v);
+
+    describe("identifies published token formats", () => {
+        const identified: [string, string][] = [
+            ["GitHub PAT", "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"],
+            ["GitHub fine-grained", "github_pat_11ABCDEFG0abcdefghijkl_" + "A".repeat(30)],
+            ["GitLab PAT", "glpat-" + "EXAMPLE".repeat(3)],
+            ["Stripe secret key", "sk_live_" + "EXAMPLE".repeat(3)],
+            ["Stripe restricted key", "rk_live_" + "EXAMPLE".repeat(3)],
+            ["Slack bot token", "xoxb-" + "123456789012-1234567890123-" + "EXAMPLE".repeat(3)],
+            ["AWS access key id", "AKIAIOSFODNN7EXAMPLE"],
+            ["Google API key", "AIza" + "EXAMPLE".repeat(5)],   // AIza + exactly 35
+            ["Anthropic key", "sk-ant-" + "EXAMPLE".repeat(4)],
+            ["npm token", "npm_" + "a".repeat(36)],
+            ["private key block", "-----BEGIN RSA PRIVATE KEY-----\nMIIEow==\n-----END RSA PRIVATE KEY-----"],
+        ];
+        for (const [name, value] of identified) {
+            it(`flags ${name} as identified`, () => {
+                const r = verdict(value);
+                expect(r.secret).toBe(true);
+                expect(r.confidence).toBe("identified");
+            });
+        }
+        it("flags a JWT", () => {
+            const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+            const body = Buffer.from(JSON.stringify({ sub: "1" })).toString("base64url");
+            expect(verdict(`${header}.${body}.c2ln`).confidence).toBe("identified");
+        });
+        it("flags a connection string carrying a password", () => {
+            const r = verdict("postgres://user:s3cr3t@localhost:5432/appdb");
+            expect(r.secret).toBe(true);
+            expect(r.confidence).toBe("identified");
+        });
+        it("does not flag the same URL without a password", () =>
+            expect(verdict("postgres://user@localhost:5432/appdb").secret).toBe(false));
+    });
+
+    describe("recognises a credential by its context, not just its shape", () => {
+        // A token copied from devtools or curl arrives wrapped in its header. The space in it
+        // defeats the shape heuristic, so without these, adding the context that proves it is a
+        // credential made it *less* likely to be masked.
+        const contextual: [string, string, string][] = [
+            ["an Authorization header", "Authorization: Bearer kJ8xQ2mN4vBtYwR7pL5zA0sD3fG6hJ9", "Authorization header"],
+            ["a bare Bearer token", "Bearer kJ8xQ2mN4vBtYwR7pL5zA0sD3fG6hJ9kM1nP4qR7tV0wX2yZ", "Bearer token"],
+            ["a Proxy-Authorization header", "Proxy-Authorization: Basic dXNlcjpwdw==", "Authorization header"],
+            ["a curl command carrying one", "curl -H 'Authorization: Bearer abc123def456' https://api.example.com", "Authorization header"],
+        ];
+        for (const [name, value, title] of contextual) {
+            it(`identifies ${name}`, () => {
+                const r = classifySecret(value);
+                expect(r.secret).toBe(true);
+                expect(r.confidence).toBe("identified");
+                expect(r.title).toBe(title);
+            });
+        }
+
+        it("identifies an assignment and names it after the field", () => {
+            const r = classifySecret("x-api-key: kJ8xQ2mN4vBtYwR7pL5zA0sD");
+            expect(r.confidence).toBe("identified");
+            expect(r.title).toBe("x-api-key");
+        });
+        it("treats an underscore as a separator, so DATABASE_PASSWORD is identified", () => {
+            const r = classifySecret("DATABASE_PASSWORD=s3cr3t-hunter2-value");
+            expect(r.confidence).toBe("identified");
+            expect(r.title).toBe("PASSWORD");
+        });
+        it("names the field, never the value", () => {
+            const r = classifySecret('{"api_key": "abcdefghijklmnopqrst"}');
+            expect(r.title).toBe("api_key");
+            expect(r.reason).not.toContain("abcdefghij");
+        });
+
+        // The value has to look like one: a name alone is not enough, or prose would trip it
+        it("ignores prose that merely mentions a password", () =>
+            expect(classifySecret("password: 8 characters minimum, one symbol").secret).toBe(false));
+        it("ignores a sentence after a colon", () =>
+            expect(classifySecret("token: the meeting is at 3pm tomorrow").secret).toBe(false));
+        it("ignores a short non-credential assignment", () =>
+            expect(classifySecret("reset_password=true").secret).toBe(false));
+
+        // An allow rule that clears a real credential is worse than a plain miss
+        it("does not let the base64 allow clear a Basic credential", () => {
+            const basic = Buffer.from("user:hunter2-password").toString("base64");
+            const r = classifySecret(basic);
+            expect(r.secret).toBe(true);
+            expect(r.confidence).toBe("identified");
+            expect(r.title).toBe("Basic credential");
+        });
+        it("still allows base64 of ordinary text", () => {
+            const b64 = Buffer.from("this is just some ordinary configuration text").toString("base64");
+            expect(classifySecret(b64).secret).toBe(false);
+        });
+    });
+
+    describe("never masks things that only look random", () => {
+        // Hex caps at 4 bits per character, which is why none of these reach the threshold
+        const allowed: [string, string][] = [
+            ["a UUID", "f47ac10b-58cc-4372-a567-0e02b2c3d479"],
+            ["a git SHA", "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"],
+            ["a SHA-256 hash", "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"],
+            ["an MD5 hash", "5d41402abc4b2a76b9719d911017c592"],
+            ["a long file path", "/Users/glen/Documents/GitHub/quick-clips/src/actions/clipboard-manager.ts"],
+            ["a plain URL", "https://dashboard.stripe.com/test/payments?status=succeeded"],
+            ["prose", "The quick brown fox jumps over the lazy dog again and again"],
+            ["a Stripe object id", "ch_3OxKzLkdIwHu7ix1aQ9vXbCd"],
+        ];
+        for (const [name, value] of allowed) {
+            it(`leaves ${name} alone`, () => expect(verdict(value).secret).toBe(false));
+        }
+        // Masking this would be actively wrong: it is meant to be published
+        it("never masks a Stripe publishable key, despite its entropy", () => {
+            const r = verdict("pk_live_" + "EXAMPLE".repeat(3));
+            expect(r.secret).toBe(false);
+            expect(r.reason).toContain("publishable");
+        });
+        it("leaves base64 of readable text alone", () => {
+            const b64 = Buffer.from("this is just some ordinary configuration text").toString("base64");
+            expect(verdict(b64).secret).toBe(false);
+        });
+    });
+
+    describe("the shape heuristic, and what it admits it cannot do", () => {
+        it("flags a long opaque token, but only as a heuristic", () => {
+            const r = verdict("kJ8xQ2mN_4vB-tYwR7pL5zA0sD3fG6hJ9kM1nP4qR7tV0wX2yZ5aC8eF1gH3iK6l");
+            expect(r.secret).toBe(true);
+            expect(r.confidence).toBe("heuristic");
+        });
+        it("still flags base64 that decodes to random bytes", () => {
+            const b64 = Buffer.from(Uint8Array.from({ length: 48 }, (_, i) => (i * 97 + 13) % 256))
+                .toString("base64");
+            expect(verdict(b64).secret).toBe(true);
+        });
+        // The known gap, recorded so nobody mistakes a pass for a clean bill of health
+        it("misses a short password, which nothing here can catch", () =>
+            expect(verdict("hunter2!").secret).toBe(false));
+        it("misses an internal token below the length floor", () =>
+            expect(verdict("aB3xQ9zK").secret).toBe(false));
+        it("treats an empty value as nothing", () =>
+            expect(verdict("   ").confidence).toBe("none"));
+    });
+});
+
+describe("applySecretVerdict", () => {
+    // Local copy: the shared one lives inside the clip-collections block.
+    const mk = (value: string, id: string): ClipEntry => ({ id, value, addedAt: 1 });
+    const clips = (): ClipEntry[] => [mk("ghp_token", "1"), mk("other", "2")];
+
+    it("masks the clip and names it", () => {
+        const v = classifySecret("ghp_" + "A".repeat(36));
+        const after = applySecretVerdict(clips(), "1", v);
+        expect(after[0].hidden).toBe(true);
+        expect(after[0].title).toBe("GitHub token");
+    });
+    it("leaves everything alone when the verdict is not a secret", () => {
+        const after = applySecretVerdict(clips(), "1", classifySecret("just some text"));
+        expect(after[0].hidden).toBeUndefined();
+        expect(after[0].title).toBeUndefined();
+    });
+    it("never overwrites a name the user gave", () => {
+        const named: ClipEntry[] = [{ ...mk("v", "1"), title: "Prod deploy key" }];
+        const after = applySecretVerdict(named, "1", classifySecret("ghp_" + "A".repeat(36)));
+        expect(after[0].title).toBe("Prod deploy key");
+        expect(after[0].hidden).toBe(true);
+    });
+    it("touches no other clip", () => {
+        const after = applySecretVerdict(clips(), "1", classifySecret("ghp_" + "A".repeat(36)));
+        expect(after[1]).toEqual(mk("other", "2"));
+    });
+    it("does not mutate the input", () => {
+        const original = clips();
+        applySecretVerdict(original, "1", classifySecret("ghp_" + "A".repeat(36)));
+        expect(original[0].hidden).toBeUndefined();
+    });
+
+    // The point of the generated name: a masked clip keeps a way to be found and told apart
+    it("leaves the masked clip findable by its generated name", () => {
+        const after = applySecretVerdict(clips(), "1", classifySecret("ghp_" + "A".repeat(36)));
+        expect(clipSearchText(after[0])).toBe("GitHub token");
+        expect(clipSearchText(after[0])).not.toContain("ghp_");
+    });
+    it("shows the name beside the mask instead of bare dots", () => {
+        const after = applySecretVerdict(clips(), "1", classifySecret("ghp_" + "A".repeat(36)));
+        const row = clipRowText(after[0]);
+        expect(row.label).toBe("GitHub token");
+        expect(row.detail).toMatch(/^•+$/);
+    });
+
+    it("names the heuristic case generically", () => {
+        const opaque = "kJ8xQ2mN_4vB-tYwR7pL5zA0sD3fG6hJ9kM1nP4qR7tV0wX2yZ5aC8eF1gH3iK6l";
+        const after = applySecretVerdict([mk(opaque, "1")], "1", classifySecret(opaque));
+        expect(after[0].title).toBe("Opaque token");
+    });
+    it("names a URL carrying a password", () => {
+        const url = "postgres://user:s3cr3t@localhost:5432/appdb";
+        const after = applySecretVerdict([mk(url, "1")], "1", classifySecret(url));
+        expect(after[0].title).toBe("URL with password");
+    });
+    // The generated names must never carry any of the value itself
+    it("never puts the value in the generated name", () => {
+        for (const v of ["ghp_" + "SEKRIT".repeat(6), "postgres://u:hunter2@h/d",
+                         "kJ8xQ2mN_4vB-tYwR7pL5zA0sD3fG6hJ9kM1nP4qR7tV0wX2yZ5aC8eF1gH3iK6l"]) {
+            const t = classifySecret(v).title ?? "";
+            expect(v.includes(t)).toBe(false);
+            expect(t.length).toBeLessThan(30);
+        }
+    });
+});
+
+describe("normaliseClips", () => {
+    const legacy = (value: string, id: string) =>
+        ({ id, value, addedAt: 1, label: value } as unknown as ClipEntry);
+
+    it("drops a stored label", () => {
+        const r = normaliseClips([legacy("secret-value", "1")]);
+        expect(r.changed).toBe(true);
+        expect("label" in r.clips[0]).toBe(false);
+    });
+    it("keeps everything else intact", () => {
+        const clip = { ...legacy("v", "1"), title: "Named", hidden: true, lastUsedAt: 9 };
+        const r = normaliseClips([clip as ClipEntry]);
+        expect(r.clips[0]).toEqual({ id: "1", value: "v", addedAt: 1, title: "Named", hidden: true, lastUsedAt: 9 });
+    });
+    it("reports no change for a collection already clean", () => {
+        const r = normaliseClips([{ id: "1", value: "v", addedAt: 1 }]);
+        expect(r.changed).toBe(false);
+    });
+    it("leaves a field it does not know about alone, so a newer version survives an older one", () => {
+        const future = { id: "1", value: "v", addedAt: 1, somethingNew: true } as unknown as ClipEntry;
+        const r = normaliseClips([future]);
+        expect((r.clips[0] as any).somethingNew).toBe(true);
+        expect(r.changed).toBe(false);
+    });
+    // The reason for the removal: a masked clip was writing its secret into the profile twice
+    it("stops a masked clip storing its value twice", () => {
+        const clip = { ...legacy("ghp_secret_token_value", "1"), hidden: true, title: "GitHub token" };
+        const before = JSON.stringify(clip);
+        const after = JSON.stringify(normaliseClips([clip as ClipEntry]).clips[0]);
+        expect(before.split("ghp_secret_token_value").length - 1).toBe(2);
+        expect(after.split("ghp_secret_token_value").length - 1).toBe(1);
+        expect(after.length).toBeLessThan(before.length);
     });
 });

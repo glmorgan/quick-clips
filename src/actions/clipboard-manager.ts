@@ -4,8 +4,9 @@ import {
 } from "@elgato/streamdeck";
 import { randomUUID } from "node:crypto";
 import {
-    addClip, clipRowText, clipSearchText, detectClipKind, markClipUsed, removeClip,
-    restoreClip, toggleClipHidden, updateClip, type ClipEntry, type ClipKind,
+    addClip, applySecretVerdict, classifySecret, clipRowText, clipSearchText, detectClipKind,
+    markClipUsed, normaliseClips, removeClip, restoreClip, toggleClipHidden, updateClip,
+    type ClipEntry, type ClipKind,
 } from "../utils.js";
 import { findHosts, showPicker, type PickerItem } from "../picker.js";
 import { outputText, readClipboard, type PasteMode } from "../typing.js";
@@ -45,10 +46,26 @@ const KIND_BADGES: Record<ClipKind, { text: string; accent: string; search: stri
 };
 
 /**
+ * Badge for a credential, which wins over the value's shape.
+ *
+ * On a masked row the value is dots, so "URL" or "TEXT" says nothing useful while "SECRET" says
+ * the one thing worth knowing. Deliberately generic: naming the service on the badge would tell
+ * anyone glancing at the screen which credential it is, which is most of what masking withholds.
+ */
+const SECRET_BADGE = {
+    text: "SECRET", accent: "#cc4125",
+    search: "secret key token credential password api",
+};
+
+/**
  * Badge for a clip. A detected colour renders as the colour itself rather than the word
  * "Color" — the one kind where the value carries more information than its name.
+ *
+ * Derived from the value rather than from `hidden`, so unhiding a clip to read it does not stop
+ * it being a credential.
  */
 function buildBadge(value: string): { text: string; accent: string; search: string; swatch?: string } {
+    if (classifySecret(value).secret) return SECRET_BADGE;
     const kind = detectClipKind(value);
     return kind === "color"
         ? { ...KIND_BADGES.color, swatch: value.trim() }
@@ -116,6 +133,41 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
         });
     }
 
+    /**
+     * Captures text into a collection, masking it if it looks like a credential.
+     *
+     * Masking on capture only, and only for a clip that is genuinely new: re-capturing text you
+     * already unhid must not hide it again, or the setting could never be made to stick.
+     *
+     * Returns the reason so the caller can say why a row arrived masked. A clip that silently
+     * turns to dots is confusing, and the whole point of the check is that the user stays the
+     * one deciding what is sensitive.
+     */
+    private capture(
+        current: ClipEntry[],
+        text: string,
+        id: string,
+        now: number
+    ): { clips: ClipEntry[]; refusal?: "empty" | "too-long"; maskedBecause?: string } {
+        const isNew = !current.some(c => c.value === text);
+        const result = addClip(current, text, id, now);
+        if (!result.added) return { clips: result.clips, refusal: result.reason };
+        if (!isNew) return { clips: result.clips };
+
+        const verdict = classifySecret(text);
+        if (!verdict.secret) return { clips: result.clips };
+
+        // addClip puts the new entry first.
+        const added = result.clips[0];
+        streamDeck.logger.info(`Masked a captured clip (${verdict.confidence}): ${verdict.reason}`);
+        return {
+            clips: applySecretVerdict(result.clips, added.id, verdict),
+            maskedBecause: verdict.confidence === "identified"
+                ? `Masked — it ${verdict.reason}`
+                : `Masked — it ${verdict.reason}. Check it is meant to be hidden`,
+        };
+    }
+
     private async updateDisplay(
         ev: WillAppearEvent<ManagerSettings> | KeyUpEvent<ManagerSettings>
             | DidReceiveSettingsEvent<ManagerSettings> | SendToPluginEvent<any, ManagerSettings>,
@@ -140,10 +192,20 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
 
     override async onWillAppear(ev: WillAppearEvent<ManagerSettings>): Promise<void> {
         const settings = await ev.action.getSettings();
-        if (settings.pasteMode === undefined) {
-            await ev.action.setSettings({ ...settings, pasteMode: "auto" });
+        let next = settings;
+
+        // Collections written before the label was dropped still carry it. Rewriting here means
+        // a stored secret stops being held twice without the user having to do anything, and the
+        // write only happens once because the second pass finds nothing to change.
+        const normalised = normaliseClips(settings.clips ?? []);
+        if (normalised.changed) {
+            streamDeck.logger.info(`Dropped the stored label from ${normalised.clips.length} clip(s)`);
+            next = { ...next, clips: normalised.clips };
         }
-        await this.updateDisplay(ev, settings);
+        if (next.pasteMode === undefined) next = { ...next, pasteMode: "auto" };
+
+        if (next !== settings) await ev.action.setSettings(next);
+        await this.updateDisplay(ev, next);
     }
 
     override async onDidReceiveSettings(ev: DidReceiveSettingsEvent<ManagerSettings>): Promise<void> {
@@ -230,10 +292,10 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
     private async captureFromKey(ev: KeyUpEvent<ManagerSettings>): Promise<void> {
         const settings = await ev.action.getSettings();
         const text = await readClipboard().catch(() => "");
-        const result = addClip(settings.clips ?? [], text, randomUUID(), Date.now());
+        const result = this.capture(settings.clips ?? [], text, randomUUID(), Date.now());
 
-        if (!result.added) {
-            streamDeck.logger.warn(`Hold-to-add refused the clipboard: ${result.reason}`);
+        if (result.refusal) {
+            streamDeck.logger.warn(`Hold-to-add refused the clipboard: ${result.refusal}`);
             // Restored before the alert, so the key does not sit on the hold prompt afterwards.
             await this.updateDisplay(ev, settings);
             await ev.action.showAlert();
@@ -312,19 +374,21 @@ export class ClipboardManager extends SingletonAction<ManagerSettings> {
          */
         let lastDeleted: { clip: ClipEntry; index: number } | null = null;
 
-        const onAction = async (actionId: string): Promise<PickerItem[]> => {
+        const onAction = async (
+            actionId: string
+        ): Promise<PickerItem[] | { items: PickerItem[]; notice?: string }> => {
             if (actionId !== ADD_ACTION) return this.toPickerItems(getClips());
             const text = await readClipboard().catch(() => "");
             // Read through the getter every time, so successive adds build on each other.
-            const result = addClip(getClips(), text, randomUUID(), Date.now());
-            if (!result.added) {
+            const result = this.capture(getClips(), text, randomUUID(), Date.now());
+            if (result.refusal) {
                 // Surfaced in the picker window rather than thrown away, so the user learns why.
-                throw new Error(result.reason === "empty"
+                throw new Error(result.refusal === "empty"
                     ? "Clipboard is empty"
                     : "Clipboard text is too long to store");
             }
             await persist(result.clips);
-            return this.toPickerItems(result.clips);
+            return { items: this.toPickerItems(result.clips), notice: result.maskedBecause };
         };
 
         for (const host of await findHosts()) {

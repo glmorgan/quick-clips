@@ -87,11 +87,35 @@ It suits the long tail of per-project details — connection strings, client IDs
 - **Name your clips** — give a clip a label like "Staging DB" so you can find it by name instead of by its contents
 - **Edit in place** — the pencil expands a row so you can change both the name and the text
 - **Hide a value** — mask a clip so it shows as dots. This is **shoulder-surfing protection, not encryption**: the value is stored as plain text and pastes normally
+- **Credentials are masked as you capture them** — see below
 - **Type badges** — rows are labelled JSON, URL, Path, Email, UUID, JWT, IP, Date or Text automatically, and a hex colour shows as its own colour
 - **Filter by anything** — name, contents, or type. Typing "json" finds your JSON clips; "colour" or "hex" finds swatches
 - **Undo a delete** — deleting is one click, so a toast offers to put it back for 8 seconds, via the button or ⌘Z. It returns to the position it came from
 - **Stable order** — using a clip never moves it, so a clip's position and its ⌘-number stay put
 - **50 clips per collection**, 10,000 characters each
+
+### Masking credentials
+
+When you capture something that looks like a credential, it is stored masked and given a name —
+"GitHub token", "Authorization header", "URL with password" — and a **SECRET** badge. A toast
+tells you why. The name matters: a masked clip is searchable by its name rather than its
+contents, so without one it would be a row of dots you could not find again.
+
+Recognised without guessing: tokens whose format the vendor publishes (GitHub, GitLab, Stripe,
+Slack, AWS, Google, Anthropic, npm, SendGrid), private key blocks, JWTs, URLs carrying a
+password, `Authorization` and `Bearer` headers, Basic credentials, and assignments to fields
+named like `api_key` or `PASSWORD`. Anything else that is long, unbroken and random-looking is
+masked too, but the toast says to check it — that one is a guess.
+
+Stripe **publishable** keys are deliberately never masked; they are meant to be public.
+
+**Two things this is not.** It is not encryption — a masked value is still plain text in your
+Stream Deck profile, and it pastes normally. And it is not a guarantee: a short password, or an
+internal token with no distinctive format, will not be recognised. Treat "not masked" as "nothing
+matched", not as "checked and safe". Unmask anything in one click with the eye icon, and mask
+anything it missed the same way.
+
+Clips stored before this existed are not re-examined — re-capture one to have it masked.
 
 ### Window Reference
 

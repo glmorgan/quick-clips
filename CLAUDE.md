@@ -53,15 +53,66 @@ Smart-quote substitution is *not* fixable here: macOS curls quotes in the receiv
 
 ## The clip model (`src/utils.ts`)
 
-`ClipEntry` is `{ id, label, value, addedAt, title?, hidden?, lastUsedAt? }`, capped at `MAX_CLIPS = 50` and `MAX_CLIP_CHARS = 10_000` because settings are JSON persisted into the Stream Deck profile.
+`ClipEntry` is `{ id, value, addedAt, title?, hidden?, lastUsedAt? }`, capped at `MAX_CLIPS = 50` and `MAX_CLIP_CHARS = 10_000` because settings are JSON persisted into the Stream Deck profile.
 
-- **`label` is a cached summary, `title` is the user's name.** They are separate so a regenerated summary can never overwrite a name the user chose, and clearing the name falls back to describing the value.
+- **Nothing is cached alongside the value.** There used to be a `label` holding a summary of it; nothing ever read it — every display path derives from the value at render time, so a row uses the window's real width rather than a cap fixed at capture. It cost about a third of the stored size and wrote a masked clip's secret into the profile **twice**. `normaliseClips` drops it from collections that still carry it, on `onWillAppear`, once. It removes named fields only — never "anything I do not recognise" — so a collection written by a newer version survives an older one reading it.
+- **`title` is the user's name for a clip**, and a generated one is only ever a default. Clearing it falls back to describing the value again.
 - **Order is stable.** Using a clip does not move it: the list is a curated set of references, not a history, so position is what makes it learnable — and ⌘1–9 would otherwise mean something different after every paste. `markClipUsed` records `lastUsedAt` without reordering. Only `addClip` moves anything, and only when re-capturing text already stored.
 - **`lastUsedAt` exists solely for eviction.** At the cap, `addClip` drops the least recently *used*, not the oldest added — otherwise a clip stored first and pasted daily would go before one added later and never touched. It falls back to `addedAt`, which is the normal case since the field is optional.
 - **`updateClip` and `restoreClip` refuse rather than break an invariant.** `addClip` guarantees no two clips share a value, so an edit that would duplicate one is declined, as is an undo whose text is already back. `restoreClip` restores by index, clamped.
 - **`detectClipKind` uses only verifiable rules** — JSON is `JSON.parse`d and restricted to objects/arrays, JWT headers are base64url-decoded and checked for `alg`, IPs go through `net.isIP`, dates round-trip through `Date`. There is deliberately **no "code" kind**: it cannot be detected without guessing.
 - **`clipRowText` / `clipSearchText`** derive what a row shows and what the filter matches. A hidden clip returns a fixed-width `MASK` and is searchable **by name only** — matching on the value would highlight the row as you typed the secret.
 - Hiding is **masking, not security**: the value is plain text in the profile and pastes verbatim. It defends against someone reading your screen and nothing else.
+
+## Secret detection (`classifySecret` in `src/utils.ts`)
+
+**This recognises a few well-known shapes. It does not detect secrets.** A short password, an
+internal token with no distinguishing format, anything under 32 characters — all pass straight
+through. A negative means "nothing matched", never "this is safe", and the code says so.
+
+The verdict carries a `confidence` of `identified | heuristic | none`, and **the distinction is in
+the type on purpose** so it cannot be flattened by a later refactor. Recognising `ghp_` is
+identification; "this looks random" is a guess, and only one has earned trust. The two read
+differently in the UI for the same reason.
+
+Order does real work, and it is not arbitrary:
+
+1. **explicit allows first** — a Stripe `pk_live_` publishable key is *meant* to be public, and
+   masking it for looking random would be actively wrong
+2. **rules that identify what the value is** — published vendor prefixes (GitHub, GitLab, Stripe,
+   Slack, AWS, Google, Anthropic, npm, SendGrid, PEM private keys), a JWT whose header actually
+   decodes to an object with `alg`, a URL with a non-empty password, and **context**:
+   `Authorization:` / `Proxy-Authorization:` headers, a bare `Bearer <token>`, base64 decoding to
+   `user:password`, and an assignment to a credential-shaped field name
+3. **a second allow** — base64 that decodes to readable text is encoded data, not an opaque secret
+4. **only then the shape heuristic** — long, single-line, no whitespace, ≥4.5 bits/char entropy
+
+Three things that were measured rather than assumed:
+
+- **Hex caps at 4 bits per character**, so UUIDs (3.88), git SHAs (3.83) and every hash sit below
+  the entropy threshold on their own. They were never the false positives they appear to be
+- **Context used to make things worse.** A token wrapped in `Authorization: Bearer …` contains a
+  space, which defeats the shape heuristic — so before the context rules, adding the proof that a
+  value was a credential made it *less* likely to be masked than the bare token
+- **The base64 allow was clearing Basic credentials.** `dXNlcjpwdw==` decodes to readable text, and
+  that text is a username and password. An allow that overrides is worse than a plain miss, which
+  is why the userinfo check runs before it
+
+**Auto-masking** happens on capture only, and only for a genuinely new clip — re-capturing text you
+deliberately unhid must not hide it again, or the setting could never stick. `applySecretVerdict`
+masks it and gives it a generated name.
+
+**The generated name is not cosmetic.** Masking costs a clip its searchability, because
+`clipSearchText` returns the title alone for a hidden clip — deliberately, so typing a secret
+cannot highlight its row. An unnamed masked clip is therefore findable by nothing and renders as
+the same twelve dots as every other one. The name restores both. It is deliberately generic
+("GitHub token", not the service-plus-anything), except for the assignment rule which names the
+clip after the **field** (`x-api-key`), since a field name was never the secret.
+
+**Existing clips are never re-classified.** A clip captured before a rule existed stays unmasked.
+That is deliberate: a clip that was never classified and one the user *deliberately unmasked* both
+simply lack `hidden`, so automatic re-scanning would silently re-hide things the user chose to
+show, with no way to stop it. An explicit user-triggered re-scan is the open option.
 
 ## Actions
 
@@ -87,7 +138,8 @@ Smart-quote substitution is *not* fixable here: macOS curls quotes in the receiv
 - `pick()` takes a **`() => clips` getter, not the array**. It runs for the life of the window and every mutation replaces the list, so anything captured by value goes stale — which once made a second add overwrite the first
 - `lastDeleted` backs undo. **Window-lifetime only and never persisted**: undo exists to take back a misaimed click, and persisting it would make this a trash can where clips you meant to destroy quietly linger
 - `EDIT_REFUSALS` maps a refusal reason to text for the picker's toast. A `duplicate` refusal clears `lastDeleted` (it can never succeed); a `full` one leaves it live for a retry
-- `KIND_BADGES` / `buildBadge` badge each row by detected kind. A detected colour renders as **the colour itself** rather than the word — the one kind where the value carries more than its name. Badge `search` text carries synonyms so "colour", "hex" and "token" all find the right rows
+- `SECRET_BADGE` wins over the shape kind, because on a masked row the value is dots — "URL" says nothing while "SECRET" says the one useful thing. Derived from the value rather than from `hidden`, so unhiding a clip to read it does not stop it being a credential, and deliberately generic: naming the service would tell anyone glancing at the screen which credential it is, which is most of what masking withholds
+- `KIND_BADGES` / `buildBadge` badge every other row by detected kind. A detected colour renders as **the colour itself** rather than the word — the one kind where the value carries more than its name. Badge `search` text carries synonyms so "colour", "hex" and "token" all find the right rows
 - `ManagerSettings`: `name`, `clips`, `pasteMode`
 
 ## The picker (`src/picker.ts`)
@@ -101,6 +153,10 @@ One page serves both the transform grid and the clip list, on an ephemeral `127.
 **Options** are the whole API: `title`, `subtitle`, `selectedId`, `actions` + `onAction`, `onDelete`, `onUndoDelete`, `onEdit` + `onReadValue`, `onToggleHidden`, `layout`, `width`, `height`, `filterPlaceholder`, `showGroupCounts`, `quickSelect`, `awaitFocusHandoff`, `timeoutMs`, `theme`, `onWarn`. Supplying a callback is what makes its control appear.
 
 **Message protocol** (POST `/message`): `select`, `action`, `delete`, `undo`, `read`, `edit`, `hide`, `error`. Everything except `select` leaves the window open.
+
+`onAction` may return `{ items, notice }` rather than a bare list — a success that has something to
+say, distinct from throwing, which reports a failure and leaves the list alone. It exists because a
+row silently turning to dots is confusing: the notice explains why a captured clip arrived masked.
 
 **Rendering rules that matter:**
 - A **delete removes the row in place**; everything else calls `refresh()`. Neither `location.reload()` nor `location.replace()` re-renders inside the native web view, so `refresh()` fetches fresh markup and swaps `main .wrap`, which also preserves filter text and scroll position
